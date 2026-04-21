@@ -36,7 +36,12 @@
       "Bash(git branch:*)",
       "Bash(git stash:*)",
       "Bash(git fsck:*)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(find:*)",
+      "Read(//c/Users/Nilansh/Desktop/helios/**)",
+      "Read(//c/Users/Nilansh/Desktop/devrag/**)",
+      "Bash(tree:*)",
+      "Bash(\"C:\\Users\\Nilansh\\Desktop\\WispCloud\\WispCloud_Technical_Handbook.md\")"
     ],
     "deny": [],
     "ask": []
