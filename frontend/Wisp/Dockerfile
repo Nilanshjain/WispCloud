@@ -12,7 +12,7 @@ RUN npm ci && npm cache clean --force
 FROM base AS development
 WORKDIR /app
 
-COPY package*.json ./
+COPY package.json ./
 RUN npm install
 
 COPY . .
