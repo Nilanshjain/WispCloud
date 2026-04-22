@@ -59,6 +59,7 @@ app.use(session({
     cookie: {
         secure: process.env.NODE_ENV === 'production',
         httpOnly: true,
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }
 }));
@@ -68,8 +69,15 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // CORS configuration
+const allowedOrigins = [FRONTEND_URL, 'http://localhost:5173'].filter(Boolean);
 app.use(cors({
-    origin: FRONTEND_URL,
+    origin: function (origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true,
 }));
 

@@ -16,9 +16,12 @@ import {
 const app = express();
 const server = http.createServer(app);
 
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const socketAllowedOrigins = [FRONTEND_URL, "http://localhost:5173"].filter(Boolean);
+
 const io = new Server(server, {
     cors: {
-        origin: process.env.FRONTEND_URL || "http://localhost:5173",
+        origin: socketAllowedOrigins,
         credentials: true
     },
     pingTimeout: 60000,
