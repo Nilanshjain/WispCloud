@@ -48,3 +48,6 @@ coverage/
 # Misc
 .eslintcache
 .parcel-cache
+
+# Personal learning notes (interview prep workspace)
+learning/

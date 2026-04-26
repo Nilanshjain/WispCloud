@@ -1,10 +1,11 @@
 import express from "express";
 import cookieParser from "cookie-parser";
-import dotenv from "dotenv";
+import dotenvSafe from "dotenv-safe";
 import helmet from "helmet";
 import session from "express-session";
+import mongoose from "mongoose";
 import { connectDB } from "./lib/db.js";
-import { connectRedis } from "./lib/redis.js";
+import { connectRedis, disconnectRedis, isRedisConnected } from "./lib/redis.js";
 import cors from "cors";
 import passport from "./config/passport.js";
 import { configureGoogleStrategy } from "./config/passport.js";
@@ -15,11 +16,15 @@ import chatInviteRoutes from "./routes/chatInvite.routes.js";
 import oauthRoutes from "./routes/oauth.routes.js";
 import groupRoutes from "./routes/group.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
+import aiRoutes from "./routes/ai.routes.js";
 import { app, server, initializeSocketIO } from "./lib/socket.js";
 import { globalLimiter } from "./middleware/rateLimiter.js";
 
-// Load environment variables
-dotenv.config();
+// Load environment variables. Refuses to boot if any key listed in `.env.example` is missing.
+// `allowEmptyValues: false` (default) — a key set to empty is treated as missing.
+dotenvSafe.config({
+    example: ".env.example",
+});
 
 // Configure Passport strategies
 configureGoogleStrategy();
@@ -28,6 +33,7 @@ const PORT = process.env.PORT || 5001;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 // Security middleware - Helmet.js
+//sets rules in the response header to protect against common vulnerabilities
 app.use(helmet({
     contentSecurityPolicy: {
         directives: {
@@ -42,18 +48,18 @@ app.use(helmet({
             frameSrc: ["'none'"],
         },
     },
-    crossOriginEmbedderPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginEmbedderPolicy: false, 
+    crossOriginResourcePolicy: { policy: "cross-origin" },  
 }));
 
 // Body parsing middleware
 app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));  //for twilio and stripe 
 app.use(cookieParser());
 
 // Session middleware (required for Passport)
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'your-session-secret-change-in-production',
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -84,6 +90,9 @@ app.use(cors({
 // Global rate limiting - Apply to all requests
 app.use(globalLimiter);
 
+// Drain flag, flipped to true on SIGTERM/SIGINT so /readyz can signal "drain me" to load balancers.
+let shuttingDown = false;
+
 // Routes
 app.use("/api/auth", authRoutes);
 
@@ -108,16 +117,30 @@ app.use("/api/users", userRoutes);
 app.use("/api/invites", chatInviteRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/ai", aiRoutes);
 
-// Health check endpoint
-app.get("/health", (req, res) => {
+
+app.get("/healthz", (req, res) => {
     res.status(200).json({
-        status: "OK",
-        timestamp: new Date().toISOString(),
+        status: "ok",
         uptime: process.uptime(),
-        environment: process.env.NODE_ENV || 'development'
     });
 });
+
+
+app.get("/readyz", (req, res) => {
+    const checks = {
+        mongo: mongoose.connection.readyState === 1,
+        redis: isRedisConnected(),
+        notDraining: !shuttingDown,
+    };
+    const ok = checks.mongo && checks.redis && checks.notDraining;
+    res.status(ok ? 200 : 503).json({
+        status: ok ? "ready" : "not_ready",
+        checks,
+    });
+});
+
 
 // 404 handler
 app.use((req, res) => {
@@ -158,22 +181,40 @@ const startServer = async () => {
     }
 };
 
-// Handle graceful shutdown
-process.on('SIGTERM', async () => {
-    console.log('\n⚠️  SIGTERM received. Shutting down gracefully...');
-    server.close(() => {
-        console.log('✅ Server closed');
-        process.exit(0);
-    });
-});
+// Graceful shutdown.
+// Render sends SIGTERM and follows with SIGKILL ~30s later. We have one shot to:
+//   1. stop accepting new connections (server.close drains in-flight requests)
+//   2. close Mongo and Redis so the platform doesn't see hung sockets in logs
+//   3. exit before SIGKILL hits, otherwise we drop responses mid-write
+const shutdown = async (signal) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`\n⚠️  ${signal} received. Draining...`);
 
-process.on('SIGINT', async () => {
-    console.log('\n⚠️  SIGINT received. Shutting down gracefully...');
-    server.close(() => {
-        console.log('✅ Server closed');
-        process.exit(0);
+    // Hard-exit guard. .unref() so the timer itself doesn't keep the process alive.
+    const hardExit = setTimeout(() => {
+        console.error('❌ Graceful shutdown timed out after 25s. Forcing exit.');
+        process.exit(1);
+    }, 25_000);
+    hardExit.unref();
+
+    server.close(async (err) => {
+        if (err) console.error('HTTP server close error:', err);
+        try {
+            await mongoose.connection.close();
+            console.log('✅ MongoDB closed');
+            await disconnectRedis();
+            console.log('✅ Shutdown complete');
+            process.exit(0);
+        } catch (closeErr) {
+            console.error('❌ Error during dependency cleanup:', closeErr);
+            process.exit(1);
+        }
     });
-});
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // Start the application
 startServer();
