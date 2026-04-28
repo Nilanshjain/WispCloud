@@ -12,7 +12,6 @@ import {
     setUserOnline,
     setUserOffline,
     getOnlineUsers,
-    getUserSockets,
 } from "./redis.js";
 import { logger } from "./logger.js";
 import { isJtiRevoked } from "./jtiBlocklist.js";
@@ -33,10 +32,14 @@ import { recordTyping, clearTypingForSender } from "./typingTracker.js";
 const app = express();
 const server = http.createServer(app);
 
-// In-memory user-socket map. Multi-tab support requires Set-of-sockets per user
-// (single value would clobber on second tab). M07 makes Redis primary; today
-// this is the single-instance hot path for "is user X online".
-const userSocketMap = new Map(); // Map<userId, Set<socketId>>
+// In-memory per-instance socket cache. NOT authoritative — Redis is the source
+// of truth for "is user X online" and "how many sockets does user X have."
+// This map exists only as a per-instance hint for fast same-instance presence
+// queries that don't need cross-instance correctness. The connect/disconnect
+// handlers gate presence transitions on the Redis count, not this map. At N>1
+// instances, this map holds only the sockets connected to THIS instance; the
+// global view lives in Redis.
+const userSocketMap = new Map(); // Map<userId, Set<socketId>> — micro-cache only
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 const socketAllowedOrigins = [FRONTEND_URL, "http://localhost:5173"].filter(Boolean);
@@ -82,18 +85,6 @@ export const initializeSocketIO = async () => {
         logger.warn({ err: error.message }, "Redis Adapter init failed, running single-instance");
     }
 };
-
-/**
- * @deprecated Use userRoom(userId) + io.to(userRoom(id)).emit(...) instead.
- * Returns one of the user's connected socket IDs. Kept for backward compat
- * with any caller still doing direct socket-ID emits.
- */
-export async function getReceiverSocketId(userId) {
-    const localSet = userSocketMap.get(userId.toString());
-    if (localSet && localSet.size > 0) return [...localSet][0];
-    const sockets = await getUserSockets(userId);
-    return sockets[0] || null;
-}
 
 /**
  * Socket auth middleware — runs the same 5-check pipeline as protectRoute on
@@ -165,8 +156,11 @@ const parseEvent = (schema, data, socket, eventName) => {
 };
 
 /**
- * Track a connection in the in-memory map. Returns true if this is the user's
- * first socket (presence transition: offline → online), false otherwise.
+ * Add to per-instance cache. Return value is informational only — the
+ * authoritative presence transition decision uses the Redis count returned by
+ * addUserSocket, not this local count. The cache exists for any future
+ * fast-path "is user X on this instance?" query that wants to skip a Redis
+ * round-trip.
  */
 const trackSocketLocally = (userId, socketId) => {
     let set = userSocketMap.get(userId);
@@ -175,22 +169,13 @@ const trackSocketLocally = (userId, socketId) => {
         userSocketMap.set(userId, set);
     }
     set.add(socketId);
-    return set.size === 1;
 };
 
-/**
- * Untrack a connection. Returns true if this was the user's last socket
- * (presence transition: online → offline), false if other tabs remain.
- */
 const untrackSocketLocally = (userId, socketId) => {
     const set = userSocketMap.get(userId);
-    if (!set) return false;
+    if (!set) return;
     set.delete(socketId);
-    if (set.size === 0) {
-        userSocketMap.delete(userId);
-        return true;
-    }
-    return false;
+    if (set.size === 0) userSocketMap.delete(userId);
 };
 
 io.on("connection", async (socket) => {
@@ -202,12 +187,15 @@ io.on("connection", async (socket) => {
         // controllers can fan out to all the user's tabs with one io.to() call.
         socket.join(userRoom(userId));
 
-        // Multi-tab tracking: in-memory + Redis Set. The booleans tell us
-        // whether this is the user's first connection (was offline, now online)
-        // or just an additional tab (already online; no presence transition).
-        const isFirstLocal = trackSocketLocally(userId, socket.id);
+        // Track in per-instance cache (informational), then add to Redis (authoritative).
+        // Redis count drives the presence transition: post-add count of 1 means
+        // this is the user's first connection across all instances → broadcast online.
+        // At N>1, addUserSocket is atomic in Redis (sAdd + sCard) so two instances
+        // racing to register the user's first connection both observe a count of 1
+        // only if they are genuinely the first; the second observes 2+ and skips.
+        trackSocketLocally(userId, socket.id);
         const remoteCount = await addUserSocket(userId, socket.id);
-        const isFirstConnection = isFirstLocal && remoteCount === 1;
+        const isFirstConnection = remoteCount === 1;
 
         if (isFirstConnection) {
             await setUserOnline(userId);
@@ -230,9 +218,9 @@ io.on("connection", async (socket) => {
     socket.on("disconnect", async () => {
         logger.debug({ socketId: socket.id, userId }, "Socket disconnected");
         try {
-            const isLastLocal = untrackSocketLocally(userId, socket.id);
+            untrackSocketLocally(userId, socket.id);
             const remoteCount = await removeUserSocket(userId, socket.id);
-            const isLastConnection = isLastLocal && remoteCount === 0;
+            const isLastConnection = remoteCount === 0;
 
             if (isLastConnection) {
                 await setUserOffline(userId);

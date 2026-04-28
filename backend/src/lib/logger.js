@@ -2,6 +2,17 @@ import pino from "pino";
 import pinoHttp from "pino-http";
 import { nanoid } from "nanoid";
 
+// Instance ID — distinguishes which backend replica produced a log line at N>1.
+// Render injects RENDER_INSTANCE_ID; other platforms vary. Falls back to a
+// boot-time nanoid so single-instance dev still has a stable identifier.
+// Stamped on every log line via logger.child below — querying logs at scale
+// becomes "filter by instanceId" without manually correlating timestamps.
+const INSTANCE_ID =
+    process.env.INSTANCE_ID ||
+    process.env.RENDER_INSTANCE_ID ||
+    process.env.HOSTNAME ||
+    nanoid(8);
+
 // Bare logger — for module-load-time logs (boot sequence, dependency connect/close)
 // and for non-request-scoped contexts (socket.io handlers, BullMQ workers).
 //
@@ -18,7 +29,7 @@ import { nanoid } from "nanoid";
 
 const isDev = process.env.NODE_ENV !== "production";
 
-export const logger = pino({
+const baseLogger = pino({
     level: process.env.LOG_LEVEL || (isDev ? "debug" : "info"),
     // pino-pretty in dev for human-readable output. In prod, leave as raw JSON
     // so log aggregators (Render's log stream, future Datadog/Logtail) can parse.
@@ -47,6 +58,12 @@ export const logger = pino({
         censor: "[REDACTED]",
     },
 });
+
+// Wrap with a child logger that stamps `instanceId` on every record.
+// child() is pino's lightweight derivation: same transport, same redaction,
+// just adds the bound fields. Cost is one extra serialized field per log line.
+export const logger = baseLogger.child({ instanceId: INSTANCE_ID });
+logger.info({ instanceId: INSTANCE_ID }, "Logger initialized");
 
 // pinoHttp middleware — attaches `req.log` (a child logger with request context)
 // to every request and emits an automatic info/error log per request.
