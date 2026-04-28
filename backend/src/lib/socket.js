@@ -12,6 +12,8 @@ import {
     setUserOnline,
     setUserOffline,
     getOnlineUsers,
+    getCachedUser,
+    cacheUser,
 } from "./redis.js";
 import { logger } from "./logger.js";
 import { isJtiRevoked } from "./jtiBlocklist.js";
@@ -119,8 +121,15 @@ io.use(async (socket, next) => {
             return next(new Error("Unauthorized: token revoked"));
         }
 
-        const user = await User.findById(decoded.userId).select("-password");
-        if (!user) return next(new Error("Unauthorized: user not found"));
+        // Cache-aside on socket auth — handshake is less hot than HTTP (one per
+        // session vs every request) but a popular service still does many
+        // handshakes per minute. Same TTL/invalidation contract as protectRoute.
+        let user = await getCachedUser(decoded.userId);
+        if (!user) {
+            user = await User.findById(decoded.userId).select("-password").lean();
+            if (!user) return next(new Error("Unauthorized: user not found"));
+            await cacheUser(decoded.userId, user);
+        }
         if (user.isActive === false) return next(new Error("Forbidden: account disabled"));
 
         socket.user = user;

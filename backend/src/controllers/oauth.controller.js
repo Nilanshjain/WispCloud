@@ -7,6 +7,7 @@ import User from "../models/user.model.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { ValidationError, NotFoundError } from "../lib/errors.js";
 import { logger } from "../lib/logger.js";
+import { deleteCachedUser } from "../lib/redis.js";
 
 const REFRESH_COOKIE_NAME = "refreshToken";
 const refreshCookieOptions = () => ({
@@ -70,6 +71,7 @@ export const linkOAuthAccount = asyncHandler(async (req, res) => {
         authProvider: provider,
         providerId: req.user.providerId,
     });
+    await deleteCachedUser(userId);
 
     res.status(200).json({ message: `${provider} account linked successfully` });
 });
@@ -90,6 +92,7 @@ export const unlinkOAuthAccount = asyncHandler(async (req, res) => {
     user.authProvider = "local";
     user.providerId = null;
     await user.save();
+    await deleteCachedUser(userId);
 
     res.status(200).json({ message: `${provider} account unlinked successfully` });
 });

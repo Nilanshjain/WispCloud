@@ -3,38 +3,52 @@ import Message from "../models/message.model.js";
 import Group from "../models/group.model.js";
 import GroupMember from "../models/groupMember.model.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
+import { withCache } from "../lib/cache.js";
+
+// TTL for analytics dashboard rollups. 60 seconds means a refresh every minute
+// will sometimes hit cache, sometimes recompute — the dashboard auto-refreshes
+// every minute typically, so the steady-state hit rate is high. Trade: numbers
+// are up to 60 seconds stale; acceptable for "platform health overview" UX.
+const ANALYTICS_CACHE_TTL = 60;
 
 export const getPlatformStats = asyncHandler(async (req, res) => {
-    // Lifetime totals — bypass soft-delete auto-filter via .withDeleted() so the
-    // headline numbers stay stable when something gets soft-deleted. User has no
-    // soft-delete plugin so its counts don't need the bypass.
-    const [totalUsers, totalMessages, totalGroups, activeUsers, oauthUsers] = await Promise.all([
-        User.countDocuments(),
-        Message.find().withDeleted().countDocuments(),
-        Group.find().withDeleted().countDocuments(),
-        User.countDocuments({ isActive: true }),
-        User.countDocuments({ authProvider: { $ne: "local" } }),
-    ]);
+    // Each Promise.all() entry is a Mongo countDocuments or aggregate against
+    // collections that grow forever (users, messages, groups). At admin
+    // dashboard refresh intervals (~once per minute) this is 7 round-trips
+    // per refresh × N admins viewing simultaneously. Cache the rolled-up
+    // result so dashboards can refresh aggressively without re-running the
+    // heavy aggregations every time.
+    const stats = await withCache("analytics:platform-stats", ANALYTICS_CACHE_TTL, async () => {
+        const [totalUsers, totalMessages, totalGroups, activeUsers, oauthUsers] = await Promise.all([
+            User.countDocuments(),
+            Message.find().withDeleted().countDocuments(),
+            Group.find().withDeleted().countDocuments(),
+            User.countDocuments({ isActive: true }),
+            User.countDocuments({ authProvider: { $ne: "local" } }),
+        ]);
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const messagesToday = await Message.find({ createdAt: { $gte: today } })
-        .withDeleted()
-        .countDocuments();
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const messagesToday = await Message.find({ createdAt: { $gte: today } })
+            .withDeleted()
+            .countDocuments();
 
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const newUsersThisWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
+        const weekAgo = new Date();
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        const newUsersThisWeek = await User.countDocuments({ createdAt: { $gte: weekAgo } });
 
-    res.status(200).json({
-        totalUsers,
-        activeUsers,
-        totalMessages,
-        messagesToday,
-        totalGroups,
-        oauthUsers,
-        newUsersThisWeek,
+        return {
+            totalUsers,
+            activeUsers,
+            totalMessages,
+            messagesToday,
+            totalGroups,
+            oauthUsers,
+            newUsersThisWeek,
+        };
     });
+
+    res.status(200).json(stats);
 });
 
 export const getUserActivity = asyncHandler(async (req, res) => {
@@ -79,27 +93,33 @@ export const getMessageActivity = asyncHandler(async (req, res) => {
 });
 
 export const getGroupStats = asyncHandler(async (req, res) => {
-    const [totalGroups, activeGroups, avgGroupSize, topGroups] = await Promise.all([
-        Group.find().withDeleted().countDocuments(),
-        Group.countDocuments({ isActive: true }),
-        GroupMember.aggregate([
-            { $match: { status: "active" } },
-            { $group: { _id: "$groupId", memberCount: { $sum: 1 } } },
-            { $group: { _id: null, avgSize: { $avg: "$memberCount" } } },
-        ]),
-        Group.find()
-            .sort({ "stats.totalMessages": -1 })
-            .limit(10)
-            .populate("createdBy", "username")
-            .select("name stats createdBy"),
-    ]);
+    // Same caching rationale as getPlatformStats — heavy aggregation, admin
+    // dashboard refresh interval. 60s TTL.
+    const stats = await withCache("analytics:group-stats", ANALYTICS_CACHE_TTL, async () => {
+        const [totalGroups, activeGroups, avgGroupSize, topGroups] = await Promise.all([
+            Group.find().withDeleted().countDocuments(),
+            Group.countDocuments({ isActive: true }),
+            GroupMember.aggregate([
+                { $match: { status: "active" } },
+                { $group: { _id: "$groupId", memberCount: { $sum: 1 } } },
+                { $group: { _id: null, avgSize: { $avg: "$memberCount" } } },
+            ]),
+            Group.find()
+                .sort({ "stats.totalMessages": -1 })
+                .limit(10)
+                .populate("createdBy", "username")
+                .select("name stats createdBy"),
+        ]);
 
-    res.status(200).json({
-        totalGroups,
-        activeGroups,
-        avgGroupSize: avgGroupSize[0]?.avgSize || 0,
-        topGroups,
+        return {
+            totalGroups,
+            activeGroups,
+            avgGroupSize: avgGroupSize[0]?.avgSize || 0,
+            topGroups,
+        };
     });
+
+    res.status(200).json(stats);
 });
 
 export const getUserRoles = asyncHandler(async (req, res) => {

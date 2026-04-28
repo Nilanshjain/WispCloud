@@ -78,32 +78,34 @@ export const disconnectRedis = async () => {
     }
 };
 
-/**
- * Cache user data with TTL (Time To Live)
- * @param {string} userId - User ID
- * @param {object} userData - User data to cache
- * @param {number} ttl - Time to live in seconds (default: 300 = 5 minutes)
- */
-export const cacheUser = async (userId, userData, ttl = 300) => {
+// User cache — keyed by userId. Stores a plain serialized object (NOT a
+// Mongoose document) because every consumer does property-access only on
+// req.user; Mongoose methods (save, virtuals, getters) are not needed on
+// the hot path. The trade: a banned user's session stays alive up to TTL
+// seconds after isActive flips, because protectRoute reads from cache.
+//
+// All writes that mutate a user document MUST call deleteCachedUser(userId)
+// to invalidate. Forgetting an invalidation is the classic cache-bug
+// scenario — a stale isActive=true entry can keep a banned user logged in.
+
+const USER_CACHE_KEY = (userId) => `user:${userId}`;
+export const USER_CACHE_TTL_SECONDS = 300; // 5 minutes — balances staleness vs Mongo load.
+
+export const cacheUser = async (userId, userData, ttl = USER_CACHE_TTL_SECONDS) => {
+    if (!isRedisConnected()) return; // Fail-open: cache miss is cheap, cache write doesn't have to succeed.
     try {
         const client = getRedisClient();
-        const key = `user:${userId}`;
-        await client.setEx(key, ttl, JSON.stringify(userData));
+        await client.setEx(USER_CACHE_KEY(userId), ttl, JSON.stringify(userData));
     } catch (error) {
         logger.error({ err: error, userId }, 'Error caching user');
     }
 };
 
-/**
- * Get cached user data
- * @param {string} userId - User ID
- * @returns {object|null} User data or null if not found
- */
 export const getCachedUser = async (userId) => {
+    if (!isRedisConnected()) return null;
     try {
         const client = getRedisClient();
-        const key = `user:${userId}`;
-        const data = await client.get(key);
+        const data = await client.get(USER_CACHE_KEY(userId));
         return data ? JSON.parse(data) : null;
     } catch (error) {
         logger.error({ err: error, userId }, 'Error getting cached user');
@@ -111,15 +113,11 @@ export const getCachedUser = async (userId) => {
     }
 };
 
-/**
- * Delete cached user data
- * @param {string} userId - User ID
- */
 export const deleteCachedUser = async (userId) => {
+    if (!isRedisConnected()) return;
     try {
         const client = getRedisClient();
-        const key = `user:${userId}`;
-        await client.del(key);
+        await client.del(USER_CACHE_KEY(userId));
     } catch (error) {
         logger.error({ err: error, userId }, 'Error deleting cached user');
     }

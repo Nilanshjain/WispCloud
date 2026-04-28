@@ -6,6 +6,7 @@ import {
     REFRESH_TOKEN_TTL_SECONDS,
 } from "../lib/utils.js";
 import { revokeJti, remainingSecondsUntil } from "../lib/jtiBlocklist.js";
+import { deleteCachedUser, getCachedUser, cacheUser } from "../lib/redis.js";
 import User from "../models/user.model.js";
 import bcrypt from "bcryptjs";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -143,7 +144,16 @@ export const refresh = asyncHandler(async (req, res) => {
         throw new UnauthorizedError("Unauthorized");
     }
 
-    const user = await User.findById(decoded.userId).select("_id isActive");
+    // Cache-aside on the refresh path. Refresh fires every ~15 min per active
+    // session — far less hot than protectRoute, but still worth caching so a
+    // user's many tabs sharing a refresh window each only hit Mongo once.
+    // The cached object includes more than _id/isActive, but that's fine —
+    // protectRoute caches the full doc and we read from the same key.
+    let user = await getCachedUser(decoded.userId);
+    if (!user) {
+        user = await User.findById(decoded.userId).select("-password").lean();
+        if (user) await cacheUser(decoded.userId, user);
+    }
     if (!user || user.isActive === false) throw new UnauthorizedError("Unauthorized");
 
     await revokeJti(decoded.jti, remainingSecondsUntil(decoded.exp));
@@ -164,6 +174,11 @@ export const updateProfile = asyncHandler(async (req, res) => {
         { profilePic: uploadResponse.secure_url },
         { new: true }
     );
+
+    // Invalidate the cache so the next protectRoute call re-fetches and the
+    // updated profilePic shows up in req.user immediately. Without this, the
+    // user could see their old pic for up to 5 minutes after upload.
+    await deleteCachedUser(userId);
 
     res.status(200).json(updatedUser);
 });

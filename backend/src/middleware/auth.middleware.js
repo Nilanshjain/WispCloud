@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
 import { isJtiRevoked } from "../lib/jtiBlocklist.js";
+import { getCachedUser, cacheUser } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
 
 // protectRoute — five checks in fail-closed order. Any failure returns 401 (or 403 if
@@ -58,11 +59,29 @@ export const protectRoute = async (req, res, next) => {
             return res.status(401).json({ message: "Unauthorized" });
         }
 
-        // Step 5 — active-user check. select('-password') keeps the bcrypt hash out of
-        // the in-memory req.user (defense in depth — controllers can't accidentally leak it).
-        const user = await User.findById(decoded.userId).select("-password");
+        // Step 5 — active-user check via cache-aside. Hot path: every authenticated
+        // request runs this. Without cache, every request = one Mongo round-trip;
+        // at sustained load this is the bottleneck. With cache: 1 Redis GET on hit,
+        // or 1 GET + 1 Mongo + 1 SET on miss. TTL = 300s (USER_CACHE_TTL_SECONDS),
+        // so a banned user's session can stay alive up to 5 min after isActive
+        // flips — every write that mutates a user document MUST call
+        // deleteCachedUser(userId) to invalidate (see auth.controller.js,
+        // oauth.controller.js for the invalidation sites).
+        //
+        // Cache stores a plain object (not a Mongoose doc). Downstream controllers
+        // do property access only (req.user._id, req.user.email, etc.); no
+        // Mongoose methods are needed on req.user.
+        let user = await getCachedUser(decoded.userId);
         if (!user) {
-            return res.status(401).json({ message: "Unauthorized" });
+            // .select('-password') keeps the bcrypt hash out of the cached object —
+            // defense in depth, even though redaction in lib/logger.js would catch it
+            // if anything tried to log req.user. .lean() returns a plain object so we
+            // skip Mongoose hydration cost on the hot path.
+            user = await User.findById(decoded.userId).select("-password").lean();
+            if (!user) {
+                return res.status(401).json({ message: "Unauthorized" });
+            }
+            await cacheUser(decoded.userId, user);
         }
         if (user.isActive === false) {
             return res.status(403).json({ message: "Account disabled" });

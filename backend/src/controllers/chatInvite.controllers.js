@@ -4,6 +4,7 @@ import { io, userRoom } from "../lib/socket.js";
 import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { ValidationError, NotFoundError, ForbiddenError } from "../lib/errors.js";
+import { getCachedUser, cacheUser } from "../lib/redis.js";
 
 export const sendChatInvite = asyncHandler(async (req, res) => {
     const { id: receiverId } = req.params;
@@ -13,8 +14,13 @@ export const sendChatInvite = asyncHandler(async (req, res) => {
         throw new ValidationError("You cannot invite yourself");
     }
 
-    const receiver = await User.findById(receiverId);
-    if (!receiver) throw new NotFoundError("User not found");
+    // Cache-aside — the receiver may be a popular user invited by many people.
+    let receiver = await getCachedUser(receiverId);
+    if (!receiver) {
+        receiver = await User.findById(receiverId).select("-password").lean();
+        if (!receiver) throw new NotFoundError("User not found");
+        await cacheUser(receiverId, receiver);
+    }
 
     const existingInvite = await ChatInvite.findOne({
         $or: [

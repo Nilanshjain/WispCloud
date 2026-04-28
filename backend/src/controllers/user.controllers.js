@@ -2,6 +2,7 @@ import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { ValidationError, NotFoundError } from "../lib/errors.js";
+import { getCachedUser, cacheUser } from "../lib/redis.js";
 
 export const searchUsers = asyncHandler(async (req, res) => {
     // Zod has already coerced limit to number and validated q. Defaults are applied at the schema layer.
@@ -123,9 +124,20 @@ export const getUserProfile = asyncHandler(async (req, res) => {
         throw new ValidationError("Use /api/auth/check for your own profile");
     }
 
-    const user = await User.findById(userId)
-        .select("fullName email username profilePic createdAt lastSeen");
-    if (!user) throw new NotFoundError("User not found");
+    // Cache-aside on the public profile view. Same cache key as protectRoute
+    // (`user:${id}`) so the entry is shared — every protectRoute call warms the
+    // cache for subsequent profile views and vice versa. The cached doc has
+    // more fields than this projection, but res.json on the cached object only
+    // serializes what's there; a slight over-send is acceptable for cache hit
+    // rate.
+    let user = await getCachedUser(userId);
+    if (!user) {
+        user = await User.findById(userId)
+            .select("-password")
+            .lean();
+        if (!user) throw new NotFoundError("User not found");
+        await cacheUser(userId, user);
+    }
 
     res.status(200).json(user);
 });
