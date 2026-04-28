@@ -136,7 +136,7 @@ export const groupMessageParamSchema = z.object({
 export const createGroupSchema = z.object({
     name: z.string().trim().min(3, 'Group name must be at least 3 characters').max(50, 'Group name too long'),
     description: z.string().trim().max(500, 'Description too long').optional(),
-    groupImage: z.string().optional(),
+    groupImage: z.union([z.string(), z.null(), z.undefined()]).optional(),
     type: z.enum(['public', 'private']).optional(),
     maxMembers: z.number().int().min(2).max(1000).optional(),
     settings: z.object({
