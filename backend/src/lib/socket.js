@@ -7,12 +7,12 @@ import jwt from "jsonwebtoken";
 import GroupMember from "../models/groupMember.model.js";
 import User from "../models/user.model.js";
 import {
-    mapSocketToUser,
-    removeSocketMapping,
+    addUserSocket,
+    removeUserSocket,
     setUserOnline,
     setUserOffline,
     getOnlineUsers,
-    getSocketIdByUserId,
+    getUserSockets,
 } from "./redis.js";
 import { logger } from "./logger.js";
 import { isJtiRevoked } from "./jtiBlocklist.js";
@@ -23,13 +23,20 @@ import {
     socketJoinGroupSchema,
     socketLeaveGroupSchema,
 } from "../middleware/validation.js";
+import {
+    configurePresenceBroadcaster,
+    schedulePresenceBroadcast,
+    flushPresenceBroadcast,
+} from "./presenceBroadcaster.js";
+import { recordTyping, clearTypingForSender } from "./typingTracker.js";
 
 const app = express();
 const server = http.createServer(app);
 
-// In-memory socket-user mapping (works without Redis, primary lookup for single-instance).
-// M07 makes Redis the authoritative store and demotes this to a per-instance micro-cache.
-const userSocketMap = new Map();
+// In-memory user-socket map. Multi-tab support requires Set-of-sockets per user
+// (single value would clobber on second tab). M07 makes Redis primary; today
+// this is the single-instance hot path for "is user X online".
+const userSocketMap = new Map(); // Map<userId, Set<socketId>>
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 const socketAllowedOrigins = [FRONTEND_URL, "http://localhost:5173"].filter(Boolean);
@@ -39,6 +46,21 @@ const io = new Server(server, {
     pingTimeout: 60000,
     pingInterval: 25000,
 });
+
+// Wire the presence broadcaster up now that io exists. Module-level init so
+// presenceBroadcaster.js stays free of socket.js imports (no circular dep).
+configurePresenceBroadcaster({
+    io,
+    getOnlineUsers,
+    event: EVENTS.GET_ONLINE_USERS,
+});
+
+/**
+ * Per-user room name. Convention: every connected socket joins this room on
+ * connect, so controllers can do `io.to(userRoom(id)).emit(...)` and reach
+ * every tab/device the user has open without per-call socket-ID lookups.
+ */
+export const userRoom = (userId) => `user:${userId}`;
 
 /**
  * Socket.IO Redis Adapter for horizontal scaling. At N=1 this is essentially a
@@ -62,39 +84,34 @@ export const initializeSocketIO = async () => {
 };
 
 /**
- * Get a user's current socket ID. In-memory map first (single-instance hot path);
- * Redis fallback for cross-instance lookups.
+ * @deprecated Use userRoom(userId) + io.to(userRoom(id)).emit(...) instead.
+ * Returns one of the user's connected socket IDs. Kept for backward compat
+ * with any caller still doing direct socket-ID emits.
  */
 export async function getReceiverSocketId(userId) {
-    const localSocketId = userSocketMap.get(userId.toString());
-    if (localSocketId) return localSocketId;
-    return await getSocketIdByUserId(userId);
+    const localSet = userSocketMap.get(userId.toString());
+    if (localSet && localSet.size > 0) return [...localSet][0];
+    const sockets = await getUserSockets(userId);
+    return sockets[0] || null;
 }
 
 /**
  * Socket auth middleware — runs the same 5-check pipeline as protectRoute on
- * the HTTP side. Failure rejects the connection (next(new Error)) instead of
- * silently falling through to a query-string userId, which used to be a trivial
- * impersonation hole.
+ * the HTTP side. Failure rejects the connection (next(new Error)) so the
+ * client receives a connect_error event with a discriminator-prefixed message.
  *
  * Checks in order (cheap → expensive, fail-closed at every step):
- *   1. Token present? Read from socket.handshake.auth.token (passed by frontend
- *      as `auth: { token: accessToken }` on connect).
+ *   1. Token present? Read from socket.handshake.auth.token.
  *   2. Signature + exp valid? jwt.verify throws on either; we catch and reject.
  *   3. type === 'access'? Defense-in-depth so a stolen refresh token can't
  *      authenticate a socket connection.
  *   4. jti not revoked? O(1) Redis check via the M03 blocklist.
  *   5. User exists + isActive? Banned users can't connect.
- *
- * On success, `socket.user` carries the full user document for downstream
- * handlers, and `socket.userId` is preserved as a string for back-compat.
  */
 io.use(async (socket, next) => {
     try {
         const token = socket.handshake.auth?.token;
-        if (!token) {
-            return next(new Error("Unauthorized: no token"));
-        }
+        if (!token) return next(new Error("Unauthorized: no token"));
 
         let decoded;
         try {
@@ -112,12 +129,8 @@ io.use(async (socket, next) => {
         }
 
         const user = await User.findById(decoded.userId).select("-password");
-        if (!user) {
-            return next(new Error("Unauthorized: user not found"));
-        }
-        if (user.isActive === false) {
-            return next(new Error("Forbidden: account disabled"));
-        }
+        if (!user) return next(new Error("Unauthorized: user not found"));
+        if (user.isActive === false) return next(new Error("Forbidden: account disabled"));
 
         socket.user = user;
         socket.userId = user._id.toString();
@@ -130,9 +143,9 @@ io.use(async (socket, next) => {
 
 /**
  * Validate an incoming socket-event payload against a Zod schema. Returns the
- * parsed value on success, null on failure (and logs a structured warn so
- * malformed clients are observable). Failure does NOT disconnect the socket —
- * a buggy client should keep its other working features alive.
+ * parsed value on success, null on failure (and logs a structured warn).
+ * Failure does NOT disconnect the socket — buggy clients should keep their
+ * other working features alive.
  */
 const parseEvent = (schema, data, socket, eventName) => {
     try {
@@ -152,34 +165,64 @@ const parseEvent = (schema, data, socket, eventName) => {
 };
 
 /**
- * Connection handler — fires after auth middleware accepts. socket.user and
- * socket.userId are guaranteed populated.
+ * Track a connection in the in-memory map. Returns true if this is the user's
+ * first socket (presence transition: offline → online), false otherwise.
  */
+const trackSocketLocally = (userId, socketId) => {
+    let set = userSocketMap.get(userId);
+    if (!set) {
+        set = new Set();
+        userSocketMap.set(userId, set);
+    }
+    set.add(socketId);
+    return set.size === 1;
+};
+
+/**
+ * Untrack a connection. Returns true if this was the user's last socket
+ * (presence transition: online → offline), false if other tabs remain.
+ */
+const untrackSocketLocally = (userId, socketId) => {
+    const set = userSocketMap.get(userId);
+    if (!set) return false;
+    set.delete(socketId);
+    if (set.size === 0) {
+        userSocketMap.delete(userId);
+        return true;
+    }
+    return false;
+};
+
 io.on("connection", async (socket) => {
     const userId = socket.userId;
     logger.debug({ socketId: socket.id, userId }, "Socket connected");
 
     try {
-        // Track this user's current socket. M07 will make Redis authoritative;
-        // today the in-memory map is the primary single-instance lookup and
-        // Redis is the cross-instance backup.
-        userSocketMap.set(userId, socket.id);
-        await mapSocketToUser(socket.id, userId);
-        await setUserOnline(userId);
+        // Per-user room — every socket joins the user's personal room so
+        // controllers can fan out to all the user's tabs with one io.to() call.
+        socket.join(userRoom(userId));
 
-        // Auto-join all of the user's group rooms so every group event reaches
-        // them without per-event broadcast logic in the controllers.
+        // Multi-tab tracking: in-memory + Redis Set. The booleans tell us
+        // whether this is the user's first connection (was offline, now online)
+        // or just an additional tab (already online; no presence transition).
+        const isFirstLocal = trackSocketLocally(userId, socket.id);
+        const remoteCount = await addUserSocket(userId, socket.id);
+        const isFirstConnection = isFirstLocal && remoteCount === 1;
+
+        if (isFirstConnection) {
+            await setUserOnline(userId);
+            schedulePresenceBroadcast();
+        }
+
+        // Auto-join all of the user's group rooms.
         const userGroups = await GroupMember.find({ userId, status: "active" }).select("groupId");
         for (const membership of userGroups) {
             socket.join(membership.groupId.toString());
         }
-        logger.debug({ userId, groupCount: userGroups.length }, "User joined group rooms");
-
-        // Broadcast updated online-user list to everyone. Anti-pattern at scale
-        // (N^2 fan-out on every connect/disconnect); M06 batches + M07 scales.
-        const onlineUsers = await getOnlineUsers();
-        io.emit(EVENTS.GET_ONLINE_USERS, onlineUsers);
-        logger.debug({ userId }, "User online");
+        logger.debug(
+            { userId, socketId: socket.id, isFirstConnection, groupCount: userGroups.length },
+            isFirstConnection ? "User came online" : "User opened additional tab"
+        );
     } catch (error) {
         logger.error({ err: error, userId }, "Error handling user connection");
     }
@@ -187,29 +230,49 @@ io.on("connection", async (socket) => {
     socket.on("disconnect", async () => {
         logger.debug({ socketId: socket.id, userId }, "Socket disconnected");
         try {
-            userSocketMap.delete(userId);
-            await removeSocketMapping(socket.id);
-            await setUserOffline(userId);
-            const onlineUsers = await getOnlineUsers();
-            io.emit(EVENTS.GET_ONLINE_USERS, onlineUsers);
-            logger.debug({ userId }, "User offline");
+            const isLastLocal = untrackSocketLocally(userId, socket.id);
+            const remoteCount = await removeUserSocket(userId, socket.id);
+            const isLastConnection = isLastLocal && remoteCount === 0;
+
+            if (isLastConnection) {
+                await setUserOffline(userId);
+                schedulePresenceBroadcast();
+                // Clear any orphaned typing indicators from this user. Receivers
+                // get an immediate isTyping=false instead of waiting for the
+                // 5s auto-expire to fire.
+                clearTypingForSender(userId, (targetId, isTyping) => {
+                    // Best-effort emit — we don't know which targets are DMs vs groups.
+                    // The convention here: try both; receivers ignore irrelevant ones.
+                    io.to(userRoom(targetId)).emit(EVENTS.USER_TYPING, {
+                        senderId: userId,
+                        isTyping,
+                    });
+                    io.to(targetId).emit(EVENTS.USER_TYPING_IN_GROUP, {
+                        groupId: targetId,
+                        senderId: userId,
+                        isTyping,
+                    });
+                });
+                logger.debug({ userId }, "User went offline (all tabs closed)");
+            } else {
+                logger.debug({ userId }, "User closed one tab, still online");
+            }
         } catch (error) {
             logger.error({ err: error, userId }, "Error handling user disconnect");
         }
     });
 
-    // DM typing indicator — direct send to receiver's socket.
+    // DM typing indicator — server-side throttle + auto-expire via typingTracker.
     socket.on(EVENTS.TYPING, async (data) => {
         const parsed = parseEvent(socketTypingSchema, data, socket, EVENTS.TYPING);
         if (!parsed) return;
 
-        const receiverSocketId = await getReceiverSocketId(parsed.receiverId);
-        if (receiverSocketId) {
-            io.to(receiverSocketId).emit(EVENTS.USER_TYPING, {
+        recordTyping(userId, parsed.receiverId, parsed.isTyping, (isTypingValue) => {
+            io.to(userRoom(parsed.receiverId)).emit(EVENTS.USER_TYPING, {
                 senderId: userId,
-                isTyping: parsed.isTyping,
+                isTyping: isTypingValue,
             });
-        }
+        });
     });
 
     // Group typing indicator — broadcast to room except sender.
@@ -217,10 +280,12 @@ io.on("connection", async (socket) => {
         const parsed = parseEvent(socketGroupTypingSchema, data, socket, EVENTS.GROUP_TYPING);
         if (!parsed) return;
 
-        socket.to(parsed.groupId).emit(EVENTS.USER_TYPING_IN_GROUP, {
-            groupId: parsed.groupId,
-            senderId: userId,
-            isTyping: parsed.isTyping,
+        recordTyping(userId, parsed.groupId, parsed.isTyping, (isTypingValue) => {
+            socket.to(parsed.groupId).emit(EVENTS.USER_TYPING_IN_GROUP, {
+                groupId: parsed.groupId,
+                senderId: userId,
+                isTyping: isTypingValue,
+            });
         });
     });
 
@@ -229,8 +294,6 @@ io.on("connection", async (socket) => {
         const parsed = parseEvent(socketJoinGroupSchema, data, socket, EVENTS.JOIN_GROUP);
         if (!parsed) return;
 
-        // Verify membership server-side before joining the room. A client cannot
-        // self-elevate by emitting joinGroup with arbitrary groupIds.
         const membership = await GroupMember.findOne({
             groupId: parsed.groupId,
             userId,
@@ -251,4 +314,4 @@ io.on("connection", async (socket) => {
     });
 });
 
-export { io, app, server };
+export { io, app, server, flushPresenceBroadcast };

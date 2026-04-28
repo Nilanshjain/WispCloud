@@ -17,7 +17,7 @@ import oauthRoutes from "./routes/oauth.routes.js";
 import groupRoutes from "./routes/group.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
-import { app, server, io, initializeSocketIO } from "./lib/socket.js";
+import { app, server, io, initializeSocketIO, flushPresenceBroadcast } from "./lib/socket.js";
 import { globalLimiter } from "./middleware/rateLimiter.js";
 import { logger, httpLogger } from "./lib/logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -202,6 +202,15 @@ const shutdown = async (signal) => {
         process.exit(1);
     }, 25_000);
     hardExit.unref();
+
+    // Flush any pending presence-broadcast debounce so the final online-user
+    // list reaches clients BEFORE we close their sockets. Otherwise the last
+    // 0–1000ms of presence changes never get sent.
+    try {
+        await flushPresenceBroadcast();
+    } catch (flushErr) {
+        logger.error({ err: flushErr }, "Error flushing presence broadcast");
+    }
 
     // Close Socket.IO first so connected clients receive a disconnect event and
     // can render their offline state. io.close() also stops accepting new socket

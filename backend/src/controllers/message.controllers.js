@@ -2,7 +2,7 @@ import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import ChatInvite from "../models/chatInvite.model.js";
 import cloudinary from "../lib/cloudinary.js";
-import { getReceiverSocketId, io } from "../lib/socket.js";
+import { io, userRoom } from "../lib/socket.js";
 import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
@@ -124,10 +124,8 @@ export const sendMessage = asyncHandler(async (req, res) => {
         },
     });
 
-    const receiverSocketId = await getReceiverSocketId(receiverId);
-    if (receiverSocketId) {
-        io.to(receiverSocketId).emit(EVENTS.NEW_MESSAGE, newMessage);
-    }
+    // Per-user room fan-out reaches all of the receiver's connected tabs/devices.
+    io.to(userRoom(receiverId)).emit(EVENTS.NEW_MESSAGE, newMessage);
 
     res.status(201).json(newMessage);
 });
@@ -147,14 +145,11 @@ export const markMessagesAsRead = asyncHandler(async (req, res) => {
         status: "read",
     }).select("_id");
 
-    const senderSocketId = await getReceiverSocketId(senderId);
-    if (senderSocketId) {
-        io.to(senderSocketId).emit(EVENTS.MESSAGES_READ, {
-            readBy: receiverId,
-            messageIds: readMessages.map((m) => m._id),
-            readAt: new Date(),
-        });
-    }
+    io.to(userRoom(senderId)).emit(EVENTS.MESSAGES_READ, {
+        readBy: receiverId,
+        messageIds: readMessages.map((m) => m._id),
+        readAt: new Date(),
+    });
 
     res.status(200).json({
         message: "Messages marked as read",

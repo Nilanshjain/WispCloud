@@ -81,7 +81,7 @@ export const useChatStore = create((set, get) => ({
 
   unsubscribeFromMessages: () => {
     const socket = useAuthStore.getState().socket;
-    socket.off("messagesRead");
+    socket.off(EVENTS.MESSAGES_READ);
   },
 
   // Mark messages as read

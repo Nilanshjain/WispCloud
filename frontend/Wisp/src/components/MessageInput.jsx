@@ -35,7 +35,7 @@ const MessageInput = ({ replyingTo, onCancelReply }) => {
     if (isTypingRef.current) {
       isTypingRef.current = false;
       const { socket } = useAuthStore.getState();
-      socket?.emit("typing", { receiverId: selectedUser?._id, isTyping: false });
+      socket?.emit(EVENTS.TYPING, { receiverId: selectedUser?._id, isTyping: false });
     }
   };
 

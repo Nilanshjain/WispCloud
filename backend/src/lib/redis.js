@@ -168,24 +168,62 @@ export const getOnlineUsers = async () => {
 };
 
 /**
- * Map socket ID to user ID
- * @param {string} socketId - Socket ID
- * @param {string} userId - User ID
+ * Add a socket to a user's socket set. Returns the post-add count so callers
+ * can decide if this was the user's first socket (presence transition).
+ *
+ * Multi-tab support: one user can have N sockets connected (one per browser
+ * tab/device). The Redis set is the authoritative cross-instance store; the
+ * in-memory Map<userId, Set<socketId>> in socket.js is the single-instance
+ * micro-cache. M07 makes Redis the primary.
+ *
+ * `socket_user_map` (hash, socketId → userId) stays 1:1 — it's used for the
+ * reverse lookup ("which user owns this disconnecting socket").
  */
-export const mapSocketToUser = async (socketId, userId) => {
+export const addUserSocket = async (userId, socketId) => {
     try {
         const client = getRedisClient();
         await client.hSet('socket_user_map', socketId, userId);
-        await client.set(`user:${userId}:socketId`, socketId);
+        await client.sAdd(`user:${userId}:sockets`, socketId);
+        return await client.sCard(`user:${userId}:sockets`);
     } catch (error) {
-        logger.error({ err: error, socketId, userId }, 'Error mapping socket to user');
+        logger.error({ err: error, userId, socketId }, 'Error adding user socket');
+        return 0;
     }
 };
 
 /**
- * Get user ID by socket ID
- * @param {string} socketId - Socket ID
- * @returns {string|null} User ID or null
+ * Remove a socket from a user's socket set. Returns the post-remove count so
+ * callers can detect "this was the last tab" and trigger offline broadcast.
+ */
+export const removeUserSocket = async (userId, socketId) => {
+    try {
+        const client = getRedisClient();
+        await client.hDel('socket_user_map', socketId);
+        await client.sRem(`user:${userId}:sockets`, socketId);
+        return await client.sCard(`user:${userId}:sockets`);
+    } catch (error) {
+        logger.error({ err: error, userId, socketId }, 'Error removing user socket');
+        return 0;
+    }
+};
+
+/**
+ * Get all socket IDs currently connected for a given user (across tabs/devices).
+ * Returns [] if the user is offline or Redis is down.
+ */
+export const getUserSockets = async (userId) => {
+    try {
+        const client = getRedisClient();
+        return await client.sMembers(`user:${userId}:sockets`);
+    } catch (error) {
+        logger.error({ err: error, userId }, 'Error getting user sockets');
+        return [];
+    }
+};
+
+/**
+ * Reverse lookup — which user owns this socket? Used by the disconnect handler
+ * when only the socket reference is available.
  */
 export const getUserBySocketId = async (socketId) => {
     try {
@@ -197,36 +235,30 @@ export const getUserBySocketId = async (socketId) => {
     }
 };
 
-/**
- * Get socket ID by user ID
- * @param {string} userId - User ID
- * @returns {string|null} Socket ID or null
- */
-export const getSocketIdByUserId = async (userId) => {
-    try {
-        const client = getRedisClient();
-        return await client.get(`user:${userId}:socketId`);
-    } catch (error) {
-        logger.error({ err: error, userId }, 'Error getting socket ID by user ID');
-        return null;
-    }
+// Legacy single-socket-per-user helpers retained for backward compat. New code
+// should use addUserSocket/removeUserSocket/getUserSockets instead. The
+// per-user room pattern (io.to(`user:${id}`).emit) replaces direct socket-ID
+// lookups for fan-out, so getSocketIdByUserId is rarely needed in business code.
+export const mapSocketToUser = async (socketId, userId) => {
+    return addUserSocket(userId, socketId);
 };
 
-/**
- * Remove socket mapping
- * @param {string} socketId - Socket ID
- */
+export const getSocketIdByUserId = async (userId) => {
+    const sockets = await getUserSockets(userId);
+    return sockets[0] || null;
+};
+
 export const removeSocketMapping = async (socketId) => {
     try {
         const client = getRedisClient();
         const userId = await client.hGet('socket_user_map', socketId);
         if (userId) {
-            await client.hDel('socket_user_map', socketId);
-            await client.del(`user:${userId}:socketId`);
+            return await removeUserSocket(userId, socketId);
         }
     } catch (error) {
         logger.error({ err: error, socketId }, 'Error removing socket mapping');
     }
+    return 0;
 };
 
 export default {
@@ -240,8 +272,11 @@ export default {
     setUserOnline,
     setUserOffline,
     getOnlineUsers,
-    mapSocketToUser,
+    addUserSocket,
+    removeUserSocket,
+    getUserSockets,
     getUserBySocketId,
+    mapSocketToUser,
     getSocketIdByUserId,
     removeSocketMapping
 };

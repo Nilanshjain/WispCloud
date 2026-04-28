@@ -1,6 +1,6 @@
 import ChatInvite from "../models/chatInvite.model.js";
 import User from "../models/user.model.js";
-import { getReceiverSocketId, io } from "../lib/socket.js";
+import { io, userRoom } from "../lib/socket.js";
 import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { ValidationError, NotFoundError, ForbiddenError } from "../lib/errors.js";
@@ -37,26 +37,20 @@ export const sendChatInvite = asyncHandler(async (req, res) => {
             existingInvite.receiverId = receiverId;
             await existingInvite.save();
 
-            const receiverSocketId = await getReceiverSocketId(receiverId);
-            if (receiverSocketId) {
-                io.to(receiverSocketId).emit(EVENTS.NEW_CHAT_INVITE, {
-                    ...existingInvite.toObject(),
-                    sender: req.user,
-                });
-            }
+            io.to(userRoom(receiverId)).emit(EVENTS.NEW_CHAT_INVITE, {
+                ...existingInvite.toObject(),
+                sender: req.user,
+            });
             return res.status(200).json(existingInvite);
         }
     }
 
     const newInvite = await ChatInvite.create({ senderId, receiverId });
 
-    const receiverSocketId = await getReceiverSocketId(receiverId);
-    if (receiverSocketId) {
-        io.to(receiverSocketId).emit(EVENTS.NEW_CHAT_INVITE, {
-            ...newInvite.toObject(),
-            sender: req.user,
-        });
-    }
+    io.to(userRoom(receiverId)).emit(EVENTS.NEW_CHAT_INVITE, {
+        ...newInvite.toObject(),
+        sender: req.user,
+    });
 
     res.status(201).json(newInvite);
 });
@@ -78,13 +72,10 @@ export const acceptChatInvite = asyncHandler(async (req, res) => {
     invite.status = "accepted";
     await invite.save();
 
-    const senderSocketId = await getReceiverSocketId(invite.senderId);
-    if (senderSocketId) {
-        io.to(senderSocketId).emit(EVENTS.CHAT_INVITE_ACCEPTED, {
-            inviteId: invite._id,
-            acceptedBy: req.user,
-        });
-    }
+    io.to(userRoom(invite.senderId)).emit(EVENTS.CHAT_INVITE_ACCEPTED, {
+        inviteId: invite._id,
+        acceptedBy: req.user,
+    });
 
     res.status(200).json(invite);
 });
@@ -106,13 +97,10 @@ export const rejectChatInvite = asyncHandler(async (req, res) => {
     invite.status = "rejected";
     await invite.save();
 
-    const senderSocketId = await getReceiverSocketId(invite.senderId);
-    if (senderSocketId) {
-        io.to(senderSocketId).emit(EVENTS.CHAT_INVITE_REJECTED, {
-            inviteId: invite._id,
-            rejectedBy: userId,
-        });
-    }
+    io.to(userRoom(invite.senderId)).emit(EVENTS.CHAT_INVITE_REJECTED, {
+        inviteId: invite._id,
+        rejectedBy: userId,
+    });
 
     res.status(200).json(invite);
 });
@@ -149,10 +137,7 @@ export const cancelChatInvite = asyncHandler(async (req, res) => {
 
     await invite.deleteOne();
 
-    const receiverSocketId = await getReceiverSocketId(invite.receiverId);
-    if (receiverSocketId) {
-        io.to(receiverSocketId).emit(EVENTS.CHAT_INVITE_CANCELLED, { inviteId: invite._id });
-    }
+    io.to(userRoom(invite.receiverId)).emit(EVENTS.CHAT_INVITE_CANCELLED, { inviteId: invite._id });
 
     res.status(200).json({ message: "Invite cancelled successfully" });
 });
