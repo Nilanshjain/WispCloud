@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Mail, Calendar, UserPlus, MessageCircle, Clock } from "lucide-react";
+import { ArrowLeft, Mail, Calendar, UserPlus, MessageCircle, Clock, X } from "lucide-react";
 import { axiosInstance } from "../lib/axios";
 import { useChatInviteStore } from "../store/useChatInviteStore";
 import { useChatStore } from "../store/useChatStore";
@@ -13,6 +13,7 @@ const UserProfilePage = () => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [inviteStatus, setInviteStatus] = useState(null); // null, 'pending', 'accepted', 'none'
+  const [showImageModal, setShowImageModal] = useState(false);
 
   const { sendChatInvite, sentInvites, pendingInvites } = useChatInviteStore();
   const { users, setSelectedUser } = useChatStore();
@@ -110,7 +111,7 @@ const UserProfilePage = () => {
             {/* Avatar */}
             <div className="flex justify-center -mt-16 mb-4">
               <div className="avatar">
-                <div className="w-32 h-32 rounded-full ring-4 ring-base-100">
+                <div className="w-32 h-32 rounded-full ring-4 ring-base-100 cursor-pointer" onClick={() => setShowImageModal(true)}>
                   <img
                     src={user.profilePic || "/avatar.png"}
                     alt={user.fullName}
@@ -188,6 +189,28 @@ const UserProfilePage = () => {
           </div>
         </div>
       </div>
+
+      {/* Profile Picture Zoom Modal */}
+      {showImageModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setShowImageModal(false)}
+        >
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setShowImageModal(false)}
+              className="absolute -top-3 -right-3 btn btn-sm btn-circle btn-ghost bg-base-100 z-10"
+            >
+              <X className="size-4" />
+            </button>
+            <img
+              src={user.profilePic || "/avatar.png"}
+              alt={user.fullName}
+              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

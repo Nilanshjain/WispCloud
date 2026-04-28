@@ -4,6 +4,7 @@ import { useAuthStore } from "../store/useAuthStore";
 import { formatMessageTime } from "../lib/utils";
 import { Users, Send, Image as ImageIcon, X, Search, Reply } from "lucide-react";
 import MessageSkeleton from "./skeletons/MessageSkeleton";
+import WispBot from "./WispBot";
 import toast from "react-hot-toast";
 
 const GroupChatContainer = () => {
@@ -222,6 +223,7 @@ const GroupChatContainer = () => {
         ))}
       </div>
 
+      <WispBot conversationId={selectedGroup._id} conversationType="group" />
       <GroupMessageInput
         text={text}
         setText={setText}

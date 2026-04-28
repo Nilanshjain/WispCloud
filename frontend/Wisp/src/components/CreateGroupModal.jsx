@@ -19,14 +19,20 @@ const CreateGroupModal = ({ isOpen, onClose }) => {
   const { createGroup, addMembers } = useGroupStore();
   const { users, getUsers, isUsersLoading } = useChatStore();
 
+  const hasFetchedRef = useRef(false);
+
   useEffect(() => {
-    if (isOpen && !loadingRef.current && !isUsersLoading && users.length === 0) {
-      loadingRef.current = true;
-      getUsers().finally(() => {
-        loadingRef.current = false;
-      });
+    if (isOpen && !hasFetchedRef.current && !isUsersLoading && users.length === 0) {
+      hasFetchedRef.current = true;
+      getUsers();
     }
-  }, [isOpen, getUsers, isUsersLoading, users.length]);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      hasFetchedRef.current = false;
+    }
+  }, [isOpen]);
 
   // Filter users based on search query
   const filteredUsers = users.filter((user) =>

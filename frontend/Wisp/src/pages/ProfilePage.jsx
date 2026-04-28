@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useAuthStore } from "../store/useAuthStore.js";
-import { Camera, Mail, User } from "lucide-react";
+import { Camera, Mail, User, X } from "lucide-react";
 
 const ProfilePage = () => {
   const { authUser, isUpdatingProfile, updateProfile } = useAuthStore();
   const [selectedImg, setSelectedImg] = useState(null);
+  const [showImageModal, setShowImageModal] = useState(false);
 
   const handleImageUpload = async (e) => {
     const file = e.target.files[0];
@@ -37,7 +38,8 @@ const ProfilePage = () => {
               <img
                 src={selectedImg || authUser.profilePic || "/avatar.png"}
                 alt="Profile"
-                className="size-32 rounded-full object-cover border-4 "
+                className="size-32 rounded-full object-cover border-4 cursor-pointer"
+                onClick={() => setShowImageModal(true)}
               />
               <label
                 htmlFor="avatar-upload"
@@ -98,6 +100,28 @@ const ProfilePage = () => {
           </div>
         </div>
       </div>
+
+      {/* Profile Picture Zoom Modal */}
+      {showImageModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+          onClick={() => setShowImageModal(false)}
+        >
+          <div className="relative" onClick={(e) => e.stopPropagation()}>
+            <button
+              onClick={() => setShowImageModal(false)}
+              className="absolute -top-3 -right-3 btn btn-sm btn-circle btn-ghost bg-base-100 z-10"
+            >
+              <X className="size-4" />
+            </button>
+            <img
+              src={selectedImg || authUser.profilePic || "/avatar.png"}
+              alt="Profile"
+              className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };

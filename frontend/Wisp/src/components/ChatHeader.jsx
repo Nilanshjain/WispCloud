@@ -2,10 +2,12 @@ import { X, Search } from "lucide-react";
 import { useAuthStore } from "../store/useAuthStore";
 import { useChatStore } from "../store/useChatStore";
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 const ChatHeader = ({ onSearchChange, isSearchOpen, setIsSearchOpen }) => {
   const { selectedUser, setSelectedUser } = useChatStore();
   const { onlineUsers } = useAuthStore();
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState("");
 
   const handleSearchChange = (e) => {
@@ -23,7 +25,10 @@ const ChatHeader = ({ onSearchChange, isSearchOpen, setIsSearchOpen }) => {
   return (
     <div className="p-2.5 border-b border-base-300">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <button
+          onClick={() => navigate(`/user/${selectedUser._id}`)}
+          className="flex items-center gap-3 hover:opacity-80 transition-opacity"
+        >
           {/* Avatar */}
           <div className="avatar">
             <div className="size-10 rounded-full relative">
@@ -32,13 +37,13 @@ const ChatHeader = ({ onSearchChange, isSearchOpen, setIsSearchOpen }) => {
           </div>
 
           {/* User info */}
-          <div>
+          <div className="text-left">
             <h3 className="font-medium">{selectedUser.fullName}</h3>
             <p className="text-sm text-base-content/70">
               {onlineUsers.includes(selectedUser._id) ? "Online" : "Offline"}
             </p>
           </div>
-        </div>
+        </button>
 
         {/* Action buttons */}
         <div className="flex items-center gap-2">

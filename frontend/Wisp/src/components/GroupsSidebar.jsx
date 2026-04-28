@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { useGroupStore } from "../store/useGroupStore";
 import { useChatStore } from "../store/useChatStore";
 import { Users, Info } from "lucide-react";
@@ -10,11 +10,13 @@ const GroupsSidebar = () => {
   const [showGroupDetails, setShowGroupDetails] = useState(false);
   const [selectedGroupForDetails, setSelectedGroupForDetails] = useState(null);
 
+  const hasFetchedGroups = useRef(false);
+
   useEffect(() => {
-    if (groups.length === 0) {
+    if (!hasFetchedGroups.current) {
+      hasFetchedGroups.current = true;
       getUserGroups();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSelectGroup = (group) => {

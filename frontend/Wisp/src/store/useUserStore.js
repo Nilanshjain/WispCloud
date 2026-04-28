@@ -32,13 +32,13 @@ export const useUserStore = create((set, get) => ({
 
   // Get recent conversations
   getRecentChats: async () => {
+    if (get().isLoadingRecent) return;
     set({ isLoadingRecent: true });
     try {
       const res = await axiosInstance.get("/users/recent");
       set({ recentChats: res.data });
     } catch (error) {
       console.error("Recent chats error:", error);
-      toast.error("Failed to load recent chats");
     } finally {
       set({ isLoadingRecent: false });
     }
