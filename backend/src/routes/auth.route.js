@@ -1,5 +1,5 @@
 import express from "express";
-import { checkAuth, login, logout, signup, updateProfile } from "../controllers/auth.controller.js";
+import { checkAuth, login, logout, refresh, signup, updateProfile } from "../controllers/auth.controller.js";
 import { protectRoute } from "../middleware/auth.middleware.js";
 import { authLimiter, uploadLimiter } from "../middleware/rateLimiter.js";
 import {
@@ -25,8 +25,13 @@ router.post("/login",
     login
 );
 
-// Logout
-router.post("/logout", logout);
+// Logout — protectRoute populates req.tokenJti/req.tokenExp so logout can revoke them.
+router.post("/logout", protectRoute, logout);
+
+// Refresh — exchange refresh cookie for new access token (with rotation).
+// No protectRoute: the refresh endpoint authenticates via the refresh cookie itself,
+// not via a (probably-expired) access token in the Authorization header.
+router.post("/refresh", refresh);
 
 // Update profile with validation, auth, and rate limiting
 router.put("/update-profile",

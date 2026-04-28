@@ -1,17 +1,27 @@
 import { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore';
+import { axiosInstance } from '../lib/axios';
 import { Loader } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const OAuthSuccessPage = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { setAuthUser } = useAuthStore();
+  const { setAuthUser, setAccessToken } = useAuthStore();
 
   useEffect(() => {
     const token = searchParams.get('token');
     const error = searchParams.get('error');
+
+    // Strip the token from the URL the instant we land. The browser is already at
+    // /auth/success?token=... and that URL is in history + Referer-on-outbound-requests.
+    // history.replaceState rewrites the current entry without triggering navigation,
+    // so the URL bar reads "/" before any external resource on this page can leak it.
+    // Pairs with the backend's Referrer-Policy: no-referrer header on the callback.
+    if (token || error) {
+      window.history.replaceState({}, '', '/');
+    }
 
     if (error) {
       toast.error('Authentication failed. Please try again.');
@@ -20,15 +30,14 @@ const OAuthSuccessPage = () => {
     }
 
     if (token) {
-      // Token is set as a cookie by the backend
-      // Fetch user data
-      fetch(`${import.meta.env.VITE_API_URL}/api/auth/check`, {
-        credentials: 'include'
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (data._id) {
-            setAuthUser(data);
+      // Access token lands in memory (Zustand), NOT localStorage. Refresh cookie
+      // was already set httpOnly by the backend's OAuth callback before this redirect.
+      setAccessToken(token);
+
+      axiosInstance.get('/auth/check')
+        .then(res => {
+          if (res.data._id) {
+            setAuthUser(res.data);
             toast.success('Logged in successfully!');
             navigate('/');
           } else {
@@ -37,6 +46,7 @@ const OAuthSuccessPage = () => {
         })
         .catch(err => {
           console.error('Error fetching user:', err);
+          setAccessToken(null);
           toast.error('Authentication failed. Please try again.');
           navigate('/login');
         });
@@ -44,7 +54,7 @@ const OAuthSuccessPage = () => {
       toast.error('Authentication failed. Please try again.');
       navigate('/login');
     }
-  }, [searchParams, navigate, setAuthUser]);
+  }, [searchParams, navigate, setAuthUser, setAccessToken]);
 
   return (
     <div className="min-h-screen flex items-center justify-center">

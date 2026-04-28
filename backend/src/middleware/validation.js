@@ -43,7 +43,7 @@ export const signupSchema = z.object({
         .trim()
         .toLowerCase(),
     password: z.string()
-        .min(6, 'Password must be at least 6 characters')
+        .min(12, 'Password must be at least 12 characters')
         .max(100, 'Password too long'),
     fullName: z.string()
         .min(2, 'Full name must be at least 2 characters')
