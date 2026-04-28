@@ -3,216 +3,160 @@ import Message from "../models/message.model.js";
 import ChatInvite from "../models/chatInvite.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
 
-export const getUsersForSidebar = async (req, res) => {
-  try {
+export const getUsersForSidebar = asyncHandler(async (req, res) => {
     const loggedInUserId = req.user._id;
 
-    // Find all accepted invites (both sent and received)
-    const acceptedInvites = await ChatInvite.find({
-      $or: [
-        { senderId: loggedInUserId, status: "accepted" },
-        { receiverId: loggedInUserId, status: "accepted" }
-      ]
-    }).catch(err => {
-      console.error("ChatInvite query error:", err);
-      return [];
-    });
-
-    // Extract user IDs from accepted invites
-    const connectedUserIds = acceptedInvites.map(invite =>
-      invite.senderId.toString() === loggedInUserId.toString()
-        ? invite.receiverId
-        : invite.senderId
-    );
-
-    // Also find users with existing message history (legacy support)
-    const existingConversations = await Message.distinct("senderId", {
-      receiverId: loggedInUserId
-    }).catch(() => []);
-
-    const sentMessages = await Message.distinct("receiverId", {
-      senderId: loggedInUserId
-    }).catch(() => []);
-
-    const conversationUserIds = [...new Set([
-      ...existingConversations.map(id => id.toString()),
-      ...sentMessages.map(id => id.toString())
-    ])];
-
-    // Combine and deduplicate user IDs
-    const allConnectedUserIds = [...new Set([
-      ...connectedUserIds.map(id => id.toString()),
-      ...conversationUserIds
-    ])];
-
-    // If no connections, return empty array
-    if (allConnectedUserIds.length === 0) {
-      return res.status(200).json([]);
+    // Find all accepted invites (both directions).
+    let acceptedInvites = [];
+    try {
+        acceptedInvites = await ChatInvite.find({
+            $or: [
+                { senderId: loggedInUserId, status: "accepted" },
+                { receiverId: loggedInUserId, status: "accepted" },
+            ],
+        });
+    } catch (err) {
+        req.log.error({ err }, "ChatInvite query error");
     }
 
-    // Fetch user details
-    const users = await User.find({
-      _id: { $in: allConnectedUserIds }
-    }).select("-password");
+    const connectedUserIds = acceptedInvites.map((invite) =>
+        invite.senderId.toString() === loggedInUserId.toString()
+            ? invite.receiverId
+            : invite.senderId
+    );
 
+    // Legacy support: users with existing message history (pre-invite-system).
+    const existingConversations = await Message.distinct("senderId", {
+        receiverId: loggedInUserId,
+    }).catch(() => []);
+    const sentMessages = await Message.distinct("receiverId", {
+        senderId: loggedInUserId,
+    }).catch(() => []);
+
+    const conversationUserIds = [
+        ...new Set([
+            ...existingConversations.map((id) => id.toString()),
+            ...sentMessages.map((id) => id.toString()),
+        ]),
+    ];
+
+    const allConnectedUserIds = [
+        ...new Set([
+            ...connectedUserIds.map((id) => id.toString()),
+            ...conversationUserIds,
+        ]),
+    ];
+
+    if (allConnectedUserIds.length === 0) {
+        return res.status(200).json([]);
+    }
+
+    const users = await User.find({ _id: { $in: allConnectedUserIds } }).select("-password");
     res.status(200).json(users);
-  } catch (error) {
-    console.error("Error in getUsersForSidebar: ", error.message);
-    console.error("Stack:", error.stack);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
+});
 
-export const getMessages = async (req, res) => {
-  try {
+export const getMessages = asyncHandler(async (req, res) => {
     const { id: userToChatId } = req.params;
     const myId = req.user._id;
     const { limit = 50, cursor } = req.query;
 
-    // Build query
     const query = {
-      $or: [
-        { senderId: myId, receiverId: userToChatId },
-        { senderId: userToChatId, receiverId: myId },
-      ],
+        $or: [
+            { senderId: myId, receiverId: userToChatId },
+            { senderId: userToChatId, receiverId: myId },
+        ],
     };
 
-    // Add cursor-based pagination
-    if (cursor) {
-      query._id = { $lt: cursor }; // Get messages before cursor
-    }
+    if (cursor) query._id = { $lt: cursor };
 
-    // Fetch messages with limit + 1 to check if there are more
     const messages = await Message.find(query)
-      .sort({ createdAt: -1 }) // Newest first
-      .limit(parseInt(limit) + 1)
-      .populate({
-        path: 'replyTo',
-        select: 'text image senderId createdAt',
-        populate: {
-          path: 'senderId',
-          select: 'username fullName profilePic',
-        },
-      });
+        .sort({ createdAt: -1 })
+        .limit(parseInt(limit) + 1)
+        .populate({
+            path: "replyTo",
+            select: "text image senderId createdAt",
+            populate: {
+                path: "senderId",
+                select: "username fullName profilePic",
+            },
+        });
 
-    // Check if there are more messages
     const hasMore = messages.length > limit;
     const returnedMessages = hasMore ? messages.slice(0, limit) : messages;
-
-    // Reverse to show oldest first in UI
     const sortedMessages = returnedMessages.reverse();
-
-    // Get next cursor (ID of the last message)
     const nextCursor = hasMore ? returnedMessages[returnedMessages.length - 1]._id : null;
 
     res.status(200).json({
-      messages: sortedMessages,
-      pagination: {
-        hasMore,
-        nextCursor,
-        limit: parseInt(limit),
-      },
+        messages: sortedMessages,
+        pagination: { hasMore, nextCursor, limit: parseInt(limit) },
     });
-  } catch (error) {
-    console.log("Error in getMessages controller: ", error.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
+});
 
-export const sendMessage = async (req, res) => {
-  try {
+export const sendMessage = asyncHandler(async (req, res) => {
     const { text, image, replyTo } = req.body;
     const { id: receiverId } = req.params;
     const senderId = req.user._id;
 
     let imageUrl;
     if (image) {
-      // Upload image to Cloudinary
-      const uploadResponse = await cloudinary.uploader.upload(image);
-      imageUrl = uploadResponse.secure_url;
+        const uploadResponse = await cloudinary.uploader.upload(image);
+        imageUrl = uploadResponse.secure_url;
     }
 
     const newMessage = new Message({
-      senderId,
-      receiverId,
-      text,
-      image: imageUrl,
-      replyTo: replyTo || null,
+        senderId,
+        receiverId,
+        text,
+        image: imageUrl,
+        replyTo: replyTo || null,
     });
 
     await newMessage.save();
-
-    // Populate replyTo field before sending
     await newMessage.populate({
-      path: 'replyTo',
-      select: 'text image senderId createdAt',
-      populate: {
-        path: 'senderId',
-        select: 'username fullName profilePic',
-      },
+        path: "replyTo",
+        select: "text image senderId createdAt",
+        populate: {
+            path: "senderId",
+            select: "username fullName profilePic",
+        },
     });
 
-    // Get receiver's socket ID from Redis (async)
     const receiverSocketId = await getReceiverSocketId(receiverId);
     if (receiverSocketId) {
-      io.to(receiverSocketId).emit("newMessage", newMessage);
+        io.to(receiverSocketId).emit("newMessage", newMessage);
     }
 
     res.status(201).json(newMessage);
-  } catch (error) {
-    console.log("Error in sendMessage controller: ", error.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
+});
 
-/**
- * Mark messages as read
- * PUT /api/messages/read/:userId
- */
-export const markMessagesAsRead = async (req, res) => {
-  try {
+export const markMessagesAsRead = asyncHandler(async (req, res) => {
     const { id: senderId } = req.params;
     const receiverId = req.user._id;
 
-    // Update all unread messages from this sender
     const result = await Message.updateMany(
-      {
-        senderId: senderId,
-        receiverId: receiverId,
-        status: { $ne: 'read' }
-      },
-      {
-        $set: {
-          status: 'read',
-          readAt: new Date()
-        }
-      }
+        { senderId, receiverId, status: { $ne: "read" } },
+        { $set: { status: "read", readAt: new Date() } }
     );
 
-    // Get updated message IDs to notify sender
     const readMessages = await Message.find({
-      senderId: senderId,
-      receiverId: receiverId,
-      status: 'read'
-    }).select('_id');
+        senderId,
+        receiverId,
+        status: "read",
+    }).select("_id");
 
-    // Notify sender via Socket.IO
     const senderSocketId = await getReceiverSocketId(senderId);
     if (senderSocketId) {
-      io.to(senderSocketId).emit("messagesRead", {
-        readBy: receiverId,
-        messageIds: readMessages.map(m => m._id),
-        readAt: new Date()
-      });
+        io.to(senderSocketId).emit("messagesRead", {
+            readBy: receiverId,
+            messageIds: readMessages.map((m) => m._id),
+            readAt: new Date(),
+        });
     }
 
     res.status(200).json({
-      message: "Messages marked as read",
-      count: result.modifiedCount
+        message: "Messages marked as read",
+        count: result.modifiedCount,
     });
-  } catch (error) {
-    console.log("Error in markMessagesAsRead controller:", error.message);
-    res.status(500).json({ error: "Internal server error" });
-  }
-};
+});

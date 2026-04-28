@@ -1,473 +1,301 @@
-import Group from '../models/group.model.js';
-import GroupMember from '../models/groupMember.model.js';
-import User from '../models/user.model.js';
-import Message from '../models/message.model.js';
+import Group from "../models/group.model.js";
+import GroupMember from "../models/groupMember.model.js";
+import User from "../models/user.model.js";
+import Message from "../models/message.model.js";
+import { asyncHandler } from "../lib/asyncHandler.js";
+import { ValidationError, ForbiddenError, NotFoundError } from "../lib/errors.js";
 
-// Create a new group
-export const createGroup = async (req, res) => {
-    try {
-        const { name, description, groupImage, type, maxMembers, settings } = req.body;
-        const userId = req.user._id;
+export const createGroup = asyncHandler(async (req, res) => {
+    const { name, description, groupImage, type, maxMembers, settings } = req.body;
+    const userId = req.user._id;
 
-        // Validate group name
-        if (!name || name.trim().length < 3) {
-            return res.status(400).json({ error: 'Group name must be at least 3 characters' });
-        }
+    const group = await Group.create({
+        name,
+        description,
+        groupImage: groupImage || "",
+        createdBy: userId,
+        type: type || "private",
+        maxMembers: maxMembers || 100,
+        settings: settings || {},
+    });
 
-        console.log(`Creating group "${name}" for user ${userId}`);
+    await GroupMember.create({
+        groupId: group._id,
+        userId,
+        role: "owner",
+        status: "active",
+    });
 
-        // Create the group
-        const group = await Group.create({
-            name,
-            description,
-            groupImage: groupImage || '',
-            createdBy: userId,
-            type: type || 'private',
-            maxMembers: maxMembers || 100,
-            settings: settings || {},
-        });
+    const populatedGroup = await Group.findById(group._id)
+        .populate("createdBy", "username email profilePic");
 
-        // Add creator as owner
-        await GroupMember.create({
-            groupId: group._id,
-            userId: userId,
-            role: 'owner',
-            status: 'active',
-        });
+    req.log.info({ groupId: group._id.toString(), userId: userId.toString() }, "group created");
+    res.status(201).json(populatedGroup);
+});
 
-        // Populate creator details
-        const populatedGroup = await Group.findById(group._id).populate('createdBy', 'username email profilePic');
+export const updateGroup = asyncHandler(async (req, res) => {
+    const { groupId } = req.params;
+    const { name, description, groupImage, type, maxMembers, settings } = req.body;
+    const userId = req.user._id;
 
-        console.log(`Successfully created group ${group._id}`);
-
-        res.status(201).json(populatedGroup);
-    } catch (error) {
-        console.error('Error in createGroup:', error);
-        console.error('Stack:', error.stack);
-        res.status(500).json({ error: 'Internal server error' });
+    const membership = await GroupMember.findOne({ groupId, userId, status: "active" });
+    if (!membership || !membership.permissions.canEditGroup) {
+        throw new ForbiddenError("You do not have permission to edit this group");
     }
-};
 
-// Update group details
-export const updateGroup = async (req, res) => {
-    try {
-        const { groupId } = req.params;
-        const { name, description, groupImage, type, maxMembers, settings } = req.body;
-        const userId = req.user._id;
+    const updatedGroup = await Group.findByIdAndUpdate(
+        groupId,
+        { name, description, groupImage, type, maxMembers, settings },
+        { new: true, runValidators: true }
+    ).populate("createdBy", "username email profilePic");
 
-        // Check if user is a member with edit permissions
-        const membership = await GroupMember.findOne({
-            groupId,
-            userId,
-            status: 'active',
-        });
+    if (!updatedGroup) throw new NotFoundError("Group not found");
 
-        if (!membership || !membership.permissions.canEditGroup) {
-            return res.status(403).json({ error: 'You do not have permission to edit this group' });
-        }
+    res.status(200).json(updatedGroup);
+});
 
-        // Update group
-        const updatedGroup = await Group.findByIdAndUpdate(
-            groupId,
-            { name, description, groupImage, type, maxMembers, settings },
-            { new: true, runValidators: true }
-        ).populate('createdBy', 'username email profilePic');
+// Soft-delete cascade: memberships + messages updateMany'd, group via softDelete().
+export const deleteGroup = asyncHandler(async (req, res) => {
+    const { groupId } = req.params;
+    const userId = req.user._id;
 
-        if (!updatedGroup) {
-            return res.status(404).json({ error: 'Group not found' });
-        }
-
-        res.status(200).json(updatedGroup);
-    } catch (error) {
-        console.error('Error in updateGroup:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    const membership = await GroupMember.findOne({
+        groupId,
+        userId,
+        role: "owner",
+        status: "active",
+    });
+    if (!membership) {
+        throw new ForbiddenError("Only the group owner can delete the group");
     }
-};
 
-// Delete group (owner only) — soft-delete with cascade to memberships + messages.
-export const deleteGroup = async (req, res) => {
-    try {
-        const { groupId } = req.params;
-        const userId = req.user._id;
+    const now = new Date();
+    await GroupMember.updateMany(
+        { groupId },
+        { $set: { deletedAt: now, deletedBy: userId } }
+    );
+    await Message.updateMany(
+        { receiverId: groupId, isGroupMessage: true },
+        { $set: { deletedAt: now, deletedBy: userId } }
+    );
 
-        // Check if user is the owner
-        const membership = await GroupMember.findOne({
-            groupId,
-            userId,
-            role: 'owner',
-            status: 'active',
-        });
-
-        if (!membership) {
-            return res.status(403).json({ error: 'Only the group owner can delete the group' });
-        }
-
-        const now = new Date();
-
-        // Cascade soft-delete: memberships + messages first, then the group itself.
-        // updateMany bypasses pre('save'), which is fine here — no permission middleware needs to fire.
-        await GroupMember.updateMany(
-            { groupId },
-            { $set: { deletedAt: now, deletedBy: userId } }
-        );
-        await Message.updateMany(
-            { receiverId: groupId, isGroupMessage: true },
-            { $set: { deletedAt: now, deletedBy: userId } }
-        );
-
-        // Group itself — load + softDelete() to use the instance method.
-        // Cannot use updateMany on the parent because we want a single audited document.
-        const group = await Group.findById(groupId);
-        if (group) {
-            await group.softDelete(userId);
-        }
-
-        res.status(200).json({ message: 'Group deleted successfully' });
-    } catch (error) {
-        console.error('Error in deleteGroup:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    const group = await Group.findById(groupId);
+    if (group) {
+        await group.softDelete(userId);
     }
-};
 
-// Add member to group
-export const addMember = async (req, res) => {
-    try {
-        const { groupId } = req.params;
-        const { userIds } = req.body; // Array of user IDs to add
-        const requestingUserId = req.user._id;
+    req.log.info({ groupId, userId: userId.toString() }, "group deleted (cascade)");
+    res.status(200).json({ message: "Group deleted successfully" });
+});
 
-        // Validate userIds
-        if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-            return res.status(400).json({ error: 'At least one user ID is required' });
-        }
+export const addMember = asyncHandler(async (req, res) => {
+    const { groupId } = req.params;
+    const { userIds } = req.body;
+    const requestingUserId = req.user._id;
 
-        console.log(`Adding ${userIds.length} members to group ${groupId}`);
+    const group = await Group.findById(groupId);
+    if (!group) throw new NotFoundError("Group not found");
 
-        // Get group
-        const group = await Group.findById(groupId);
-        if (!group) {
-            return res.status(404).json({ error: 'Group not found' });
-        }
+    const membership = await GroupMember.findOne({
+        groupId,
+        userId: requestingUserId,
+        status: "active",
+    });
+    if (!membership || !membership.permissions.canAddMembers) {
+        throw new ForbiddenError("You do not have permission to add members");
+    }
 
-        // Check if requesting user has permission to add members
-        const membership = await GroupMember.findOne({
-            groupId,
-            userId: requestingUserId,
-            status: 'active',
-        });
+    const currentMemberCount = await GroupMember.countDocuments({
+        groupId,
+        status: { $in: ["active", "pending"] },
+    });
+    if (currentMemberCount + userIds.length > group.maxMembers) {
+        throw new ValidationError("Group is at maximum capacity");
+    }
 
-        if (!membership || !membership.permissions.canAddMembers) {
-            return res.status(403).json({ error: 'You do not have permission to add members' });
-        }
+    const users = await User.find({ _id: { $in: userIds } });
+    if (users.length !== userIds.length) {
+        throw new ValidationError("One or more user IDs are invalid");
+    }
 
-        // Check if group is at max capacity
-        const currentMemberCount = await GroupMember.countDocuments({
-            groupId,
-            status: { $in: ['active', 'pending'] },
-        });
-
-        if (currentMemberCount + userIds.length > group.maxMembers) {
-            return res.status(400).json({ error: 'Group is at maximum capacity' });
-        }
-
-        // Validate all user IDs exist
-        const users = await User.find({ _id: { $in: userIds } });
-        if (users.length !== userIds.length) {
-            return res.status(400).json({ error: 'One or more user IDs are invalid' });
-        }
-
-        // Add members
-        const addedMembers = [];
-        for (const userId of userIds) {
-            // Check if user is already a member
-            const existingMember = await GroupMember.findOne({ groupId, userId });
-
-            if (existingMember) {
-                if (existingMember.status === 'left' || existingMember.status === 'banned') {
-                    // Reactivate member
-                    existingMember.status = group.settings.requireApproval ? 'pending' : 'active';
-                    existingMember.joinedAt = Date.now();
-                    await existingMember.save();
-                    addedMembers.push(existingMember);
-                }
-                // Skip if already active or pending
-            } else {
-                // Create new member
-                const newMember = await GroupMember.create({
-                    groupId,
-                    userId,
-                    role: 'member',
-                    status: group.settings.requireApproval ? 'pending' : 'active',
-                });
-                addedMembers.push(newMember);
+    const addedMembers = [];
+    for (const userId of userIds) {
+        const existingMember = await GroupMember.findOne({ groupId, userId });
+        if (existingMember) {
+            if (existingMember.status === "left" || existingMember.status === "banned") {
+                existingMember.status = group.settings.requireApproval ? "pending" : "active";
+                existingMember.joinedAt = Date.now();
+                await existingMember.save();
+                addedMembers.push(existingMember);
             }
+            // Skip if already active or pending.
+        } else {
+            const newMember = await GroupMember.create({
+                groupId,
+                userId,
+                role: "member",
+                status: group.settings.requireApproval ? "pending" : "active",
+            });
+            addedMembers.push(newMember);
         }
-
-        // Update group stats
-        const activeMemberCount = await GroupMember.countDocuments({
-            groupId,
-            status: 'active',
-        });
-        group.stats.totalMembers = activeMemberCount;
-        await group.save();
-
-        // Populate member details
-        const populatedMembers = await GroupMember.find({
-            _id: { $in: addedMembers.map(m => m._id) }
-        }).populate('userId', 'username email profilePic');
-
-        console.log(`Successfully added ${addedMembers.length} members to group ${groupId}`);
-
-        res.status(200).json(populatedMembers);
-    } catch (error) {
-        console.error('Error in addMember:', error);
-        console.error('Stack:', error.stack);
-        res.status(500).json({ error: 'Internal server error' });
     }
-};
 
-// Remove member from group
-export const removeMember = async (req, res) => {
-    try {
-        const { groupId, memberId } = req.params;
-        const requestingUserId = req.user._id;
+    const activeMemberCount = await GroupMember.countDocuments({ groupId, status: "active" });
+    group.stats.totalMembers = activeMemberCount;
+    await group.save();
 
-        // Check if requesting user has permission to remove members
-        const requestingMembership = await GroupMember.findOne({
-            groupId,
-            userId: requestingUserId,
-            status: 'active',
-        });
+    const populatedMembers = await GroupMember.find({
+        _id: { $in: addedMembers.map((m) => m._id) },
+    }).populate("userId", "username email profilePic");
 
-        if (!requestingMembership || !requestingMembership.permissions.canRemoveMembers) {
-            return res.status(403).json({ error: 'You do not have permission to remove members' });
-        }
+    req.log.info({ groupId, addedCount: addedMembers.length }, "members added to group");
+    res.status(200).json(populatedMembers);
+});
 
-        // Get target member
-        const targetMembership = await GroupMember.findOne({
-            groupId,
-            userId: memberId,
-        });
+export const removeMember = asyncHandler(async (req, res) => {
+    const { groupId, memberId } = req.params;
+    const requestingUserId = req.user._id;
 
-        if (!targetMembership) {
-            return res.status(404).json({ error: 'Member not found in this group' });
-        }
-
-        // Prevent removing owner
-        if (targetMembership.role === 'owner') {
-            return res.status(403).json({ error: 'Cannot remove the group owner' });
-        }
-
-        // Admins cannot remove other admins unless they are the owner
-        if (targetMembership.role === 'admin' && requestingMembership.role !== 'owner') {
-            return res.status(403).json({ error: 'Only the owner can remove admins' });
-        }
-
-        // Update member status to 'banned'
-        targetMembership.status = 'left';
-        await targetMembership.save();
-
-        // Update group stats
-        const group = await Group.findById(groupId);
-        const activeMemberCount = await GroupMember.countDocuments({
-            groupId,
-            status: 'active',
-        });
-        group.stats.totalMembers = activeMemberCount;
-        await group.save();
-
-        res.status(200).json({ message: 'Member removed successfully' });
-    } catch (error) {
-        console.error('Error in removeMember:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    const requestingMembership = await GroupMember.findOne({
+        groupId,
+        userId: requestingUserId,
+        status: "active",
+    });
+    if (!requestingMembership || !requestingMembership.permissions.canRemoveMembers) {
+        throw new ForbiddenError("You do not have permission to remove members");
     }
-};
 
-// Update member role
-export const updateMemberRole = async (req, res) => {
-    try {
-        const { groupId, memberId } = req.params;
-        const { role } = req.body; // 'admin' or 'member'
-        const requestingUserId = req.user._id;
+    const targetMembership = await GroupMember.findOne({ groupId, userId: memberId });
+    if (!targetMembership) throw new NotFoundError("Member not found in this group");
 
-        // Only owner can change roles
-        const requestingMembership = await GroupMember.findOne({
-            groupId,
-            userId: requestingUserId,
-            role: 'owner',
-            status: 'active',
-        });
-
-        if (!requestingMembership) {
-            return res.status(403).json({ error: 'Only the group owner can change member roles' });
-        }
-
-        // Get target member
-        const targetMembership = await GroupMember.findOne({
-            groupId,
-            userId: memberId,
-            status: 'active',
-        });
-
-        if (!targetMembership) {
-            return res.status(404).json({ error: 'Member not found in this group' });
-        }
-
-        // Cannot change owner role
-        if (targetMembership.role === 'owner') {
-            return res.status(403).json({ error: 'Cannot change the owner role' });
-        }
-
-        // Validate role
-        if (!['admin', 'member'].includes(role)) {
-            return res.status(400).json({ error: 'Invalid role. Must be "admin" or "member"' });
-        }
-
-        // Update role (pre-save middleware will set permissions)
-        targetMembership.role = role;
-        await targetMembership.save();
-
-        const populatedMember = await GroupMember.findById(targetMembership._id)
-            .populate('userId', 'username email profilePic');
-
-        res.status(200).json(populatedMember);
-    } catch (error) {
-        console.error('Error in updateMemberRole:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    if (targetMembership.role === "owner") {
+        throw new ForbiddenError("Cannot remove the group owner");
     }
-};
-
-// Get group details
-export const getGroupDetails = async (req, res) => {
-    try {
-        const { groupId } = req.params;
-        const userId = req.user._id;
-
-        // Check if user is a member
-        const membership = await GroupMember.findOne({
-            groupId,
-            userId,
-            status: { $in: ['active', 'pending'] },
-        });
-
-        if (!membership) {
-            return res.status(403).json({ error: 'You are not a member of this group' });
-        }
-
-        const group = await Group.findById(groupId)
-            .populate('createdBy', 'username email profilePic');
-
-        if (!group) {
-            return res.status(404).json({ error: 'Group not found' });
-        }
-
-        res.status(200).json({
-            group,
-            membership,
-        });
-    } catch (error) {
-        console.error('Error in getGroupDetails:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    if (targetMembership.role === "admin" && requestingMembership.role !== "owner") {
+        throw new ForbiddenError("Only the owner can remove admins");
     }
-};
 
-// Get group members
-export const getGroupMembers = async (req, res) => {
-    try {
-        const { groupId } = req.params;
-        const userId = req.user._id;
+    targetMembership.status = "left";
+    await targetMembership.save();
 
-        // Check if user is a member
-        const membership = await GroupMember.findOne({
-            groupId,
-            userId,
-            status: { $in: ['active', 'pending'] },
-        });
+    const group = await Group.findById(groupId);
+    const activeMemberCount = await GroupMember.countDocuments({ groupId, status: "active" });
+    group.stats.totalMembers = activeMemberCount;
+    await group.save();
 
-        if (!membership) {
-            return res.status(403).json({ error: 'You are not a member of this group' });
-        }
+    res.status(200).json({ message: "Member removed successfully" });
+});
 
-        const members = await GroupMember.find({
-            groupId,
-            status: 'active',
-        })
-            .populate('userId', 'username email profilePic')
-            .sort({ role: 1, joinedAt: 1 }); // Owner first, then admins, then members
+export const updateMemberRole = asyncHandler(async (req, res) => {
+    const { groupId, memberId } = req.params;
+    const { role } = req.body;
+    const requestingUserId = req.user._id;
 
-        res.status(200).json(members);
-    } catch (error) {
-        console.error('Error in getGroupMembers:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    const requestingMembership = await GroupMember.findOne({
+        groupId,
+        userId: requestingUserId,
+        role: "owner",
+        status: "active",
+    });
+    if (!requestingMembership) {
+        throw new ForbiddenError("Only the group owner can change member roles");
     }
-};
 
-// Leave group
-export const leaveGroup = async (req, res) => {
-    try {
-        const { groupId } = req.params;
-        const userId = req.user._id;
-
-        const membership = await GroupMember.findOne({
-            groupId,
-            userId,
-            status: 'active',
-        });
-
-        if (!membership) {
-            return res.status(404).json({ error: 'You are not a member of this group' });
-        }
-
-        // Owner cannot leave, must transfer ownership or delete group
-        if (membership.role === 'owner') {
-            return res.status(403).json({ error: 'Owner cannot leave the group. Transfer ownership or delete the group.' });
-        }
-
-        // Update status to left
-        membership.status = 'left';
-        await membership.save();
-
-        // Update group stats
-        const group = await Group.findById(groupId);
-        const activeMemberCount = await GroupMember.countDocuments({
-            groupId,
-            status: 'active',
-        });
-        group.stats.totalMembers = activeMemberCount;
-        await group.save();
-
-        res.status(200).json({ message: 'Successfully left the group' });
-    } catch (error) {
-        console.error('Error in leaveGroup:', error);
-        res.status(500).json({ error: 'Internal server error' });
+    const targetMembership = await GroupMember.findOne({
+        groupId,
+        userId: memberId,
+        status: "active",
+    });
+    if (!targetMembership) throw new NotFoundError("Member not found in this group");
+    if (targetMembership.role === "owner") {
+        throw new ForbiddenError("Cannot change the owner role");
     }
-};
 
-// Get user's groups
-export const getUserGroups = async (req, res) => {
-    try {
-        const userId = req.user._id;
+    targetMembership.role = role;
+    await targetMembership.save();
 
-        const memberships = await GroupMember.find({
-            userId,
-            status: 'active',
-        }).populate({
-            path: 'groupId',
-            populate: {
-                path: 'createdBy',
-                select: 'username profilePic',
-            },
+    const populatedMember = await GroupMember.findById(targetMembership._id)
+        .populate("userId", "username email profilePic");
+
+    res.status(200).json(populatedMember);
+});
+
+export const getGroupDetails = asyncHandler(async (req, res) => {
+    const { groupId } = req.params;
+    const userId = req.user._id;
+
+    const membership = await GroupMember.findOne({
+        groupId,
+        userId,
+        status: { $in: ["active", "pending"] },
+    });
+    if (!membership) throw new ForbiddenError("You are not a member of this group");
+
+    const group = await Group.findById(groupId)
+        .populate("createdBy", "username email profilePic");
+    if (!group) throw new NotFoundError("Group not found");
+
+    res.status(200).json({ group, membership });
+});
+
+export const getGroupMembers = asyncHandler(async (req, res) => {
+    const { groupId } = req.params;
+    const userId = req.user._id;
+
+    const membership = await GroupMember.findOne({
+        groupId,
+        userId,
+        status: { $in: ["active", "pending"] },
+    });
+    if (!membership) throw new ForbiddenError("You are not a member of this group");
+
+    const members = await GroupMember.find({ groupId, status: "active" })
+        .populate("userId", "username email profilePic")
+        .sort({ role: 1, joinedAt: 1 });
+
+    res.status(200).json(members);
+});
+
+export const leaveGroup = asyncHandler(async (req, res) => {
+    const { groupId } = req.params;
+    const userId = req.user._id;
+
+    const membership = await GroupMember.findOne({ groupId, userId, status: "active" });
+    if (!membership) throw new NotFoundError("You are not a member of this group");
+
+    if (membership.role === "owner") {
+        throw new ForbiddenError(
+            "Owner cannot leave the group. Transfer ownership or delete the group."
+        );
+    }
+
+    membership.status = "left";
+    await membership.save();
+
+    const group = await Group.findById(groupId);
+    const activeMemberCount = await GroupMember.countDocuments({ groupId, status: "active" });
+    group.stats.totalMembers = activeMemberCount;
+    await group.save();
+
+    res.status(200).json({ message: "Successfully left the group" });
+});
+
+export const getUserGroups = asyncHandler(async (req, res) => {
+    const userId = req.user._id;
+
+    const memberships = await GroupMember.find({ userId, status: "active" })
+        .populate({
+            path: "groupId",
+            populate: { path: "createdBy", select: "username profilePic" },
         });
 
-        const groups = memberships.map(m => ({
+    const groups = memberships
+        .filter((m) => m.groupId) // soft-deleted groups produce null after auto-filter
+        .map((m) => ({
             ...m.groupId.toObject(),
             memberRole: m.role,
             memberPermissions: m.permissions,
         }));
 
-        res.status(200).json(groups);
-    } catch (error) {
-        console.error('Error in getUserGroups:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-};
+    res.status(200).json(groups);
+});

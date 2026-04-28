@@ -1,12 +1,12 @@
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import User from '../models/user.model.js';
+import { logger } from '../lib/logger.js';
 
 // Google OAuth Strategy
 export const configureGoogleStrategy = () => {
-    // Skip if OAuth credentials not configured
     if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
-        console.log('⚠️  Google OAuth not configured - skipping strategy');
+        logger.warn('Google OAuth not configured, skipping strategy');
         return;
     }
 

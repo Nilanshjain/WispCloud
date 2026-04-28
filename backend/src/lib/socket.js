@@ -3,6 +3,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import http from "http";
 import express from "express";
 import { createClient } from "redis";
+import jwt from "jsonwebtoken";
 import GroupMember from "../models/groupMember.model.js";
 import {
     mapSocketToUser,
@@ -12,9 +13,13 @@ import {
     getOnlineUsers,
     getSocketIdByUserId
 } from "./redis.js";
+import { logger } from "./logger.js";
 
 const app = express();
 const server = http.createServer(app);
+
+// In-memory socket-user mapping (works without Redis, primary lookup for single-instance)
+const userSocketMap = new Map();
 
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
 const socketAllowedOrigins = [FRONTEND_URL, "http://localhost:5173"].filter(Boolean);
@@ -40,18 +45,13 @@ export const initializeSocketIO = async () => {
         const subClient = pubClient.duplicate();
 
         await Promise.all([pubClient.connect(), subClient.connect()]);
-
-        // Use Redis adapter for multi-instance support
         io.adapter(createAdapter(pubClient, subClient));
+        logger.info('Socket.IO Redis Adapter initialized, multi-instance support enabled');
 
-        console.log('✅ Socket.IO Redis Adapter initialized - Multi-instance support enabled');
-
-        // Handle adapter errors
-        pubClient.on('error', (err) => console.error('Redis Pub Client Error:', err));
-        subClient.on('error', (err) => console.error('Redis Sub Client Error:', err));
-
+        pubClient.on('error', (err) => logger.error({ err }, 'Redis pub client error'));
+        subClient.on('error', (err) => logger.error({ err }, 'Redis sub client error'));
     } catch (error) {
-        console.warn('⚠️  Redis Adapter initialization failed. Running in single-instance mode.', error.message);
+        logger.warn({ err: error.message }, 'Redis Adapter init failed, running single-instance');
     }
 };
 
@@ -61,65 +61,71 @@ export const initializeSocketIO = async () => {
  * @returns {Promise<string|null>} Socket ID or null
  */
 export async function getReceiverSocketId(userId) {
+    // Check in-memory map first (always available, even without Redis)
+    const localSocketId = userSocketMap.get(userId.toString());
+    if (localSocketId) return localSocketId;
+
+    // Fall back to Redis for multi-instance deployments
     return await getSocketIdByUserId(userId);
 }
+
+/**
+ * Socket.IO auth middleware - verify JWT token
+ */
+io.use((socket, next) => {
+    const token = socket.handshake.auth?.token;
+    if (token) {
+        try {
+            const decoded = jwt.verify(token, process.env.JWT_SECRET);
+            socket.userId = decoded.userId;
+        } catch (err) {
+            // Token invalid, fall back to query userId
+        }
+    }
+    next();
+});
 
 /**
  * Socket.IO connection handler with Redis-backed presence
  */
 io.on("connection", async (socket) => {
-    console.log("✅ User connected:", socket.id);
+    logger.debug({ socketId: socket.id }, 'Socket connected');
 
-    const userId = socket.handshake.query.userId;
+    const userId = socket.userId || socket.handshake.query.userId;
 
     if (userId && userId !== 'undefined') {
         try {
-            // Store socket-user mapping in Redis
+            userSocketMap.set(userId, socket.id);
             await mapSocketToUser(socket.id, userId);
-
-            // Set user as online in Redis
             await setUserOnline(userId);
 
-            // Join user's groups (as Socket.IO rooms)
-            const userGroups = await GroupMember.find({
-                userId,
-                status: 'active',
-            }).select('groupId');
-
+            const userGroups = await GroupMember.find({ userId, status: 'active' }).select('groupId');
             for (const membership of userGroups) {
                 socket.join(membership.groupId.toString());
-                console.log(`👥 User ${userId} joined group room: ${membership.groupId}`);
             }
+            logger.debug({ userId, groupCount: userGroups.length }, 'User joined group rooms');
 
-            // Broadcast online users to all clients
             const onlineUsers = await getOnlineUsers();
             io.emit("getOnlineUsers", onlineUsers);
-
-            console.log(`📡 User ${userId} is now online`);
+            logger.debug({ userId }, 'User online');
         } catch (error) {
-            console.error('Error handling user connection:', error);
+            logger.error({ err: error, userId }, 'Error handling user connection');
         }
     }
 
-    // Handle user disconnect
     socket.on("disconnect", async () => {
-        console.log("❌ User disconnected:", socket.id);
+        logger.debug({ socketId: socket.id }, 'Socket disconnected');
 
         if (userId && userId !== 'undefined') {
             try {
-                // Remove socket mapping from Redis
+                userSocketMap.delete(userId);
                 await removeSocketMapping(socket.id);
-
-                // Set user as offline in Redis
                 await setUserOffline(userId);
-
-                // Broadcast updated online users list
                 const onlineUsers = await getOnlineUsers();
                 io.emit("getOnlineUsers", onlineUsers);
-
-                console.log(`📴 User ${userId} is now offline`);
+                logger.debug({ userId }, 'User offline');
             } catch (error) {
-                console.error('Error handling user disconnect:', error);
+                logger.error({ err: error, userId }, 'Error handling user disconnect');
             }
         }
     });
@@ -160,18 +166,15 @@ io.on("connection", async (socket) => {
 
         if (membership) {
             socket.join(groupId);
-            console.log(`👥 User ${userId} joined group room: ${groupId}`);
-
-            // Notify the user they've joined successfully
+            logger.debug({ userId, groupId }, 'User joined group room');
             socket.emit("groupJoined", { groupId });
         }
     });
 
-    // Handle leaving a group
     socket.on("leaveGroup", (data) => {
         const { groupId } = data;
         socket.leave(groupId);
-        console.log(`👋 User ${userId} left group room: ${groupId}`);
+        logger.debug({ userId, groupId }, 'User left group room');
     });
 });
 

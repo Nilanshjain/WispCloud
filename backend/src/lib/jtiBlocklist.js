@@ -1,4 +1,5 @@
 import { getRedisClient, isRedisConnected } from "./redis.js";
+import { logger } from "./logger.js";
 
 // Per-token revocation list. A jti added here is treated as revoked even if its signature
 // is valid and its `exp` is in the future. The Redis key carries a TTL equal to the token's
@@ -26,7 +27,7 @@ export const revokeJti = async (jti, ttlSeconds) => {
         // EX sets a TTL in seconds. Value is "1" (placeholder — the key's existence is the signal).
         await client.set(keyFor(jti), "1", { EX: Math.max(1, Math.floor(ttlSeconds)) });
     } catch (error) {
-        console.error("revokeJti error:", error.message);
+        logger.error({ err: error.message, jti }, "revokeJti error");
     }
 };
 
@@ -37,7 +38,7 @@ export const isJtiRevoked = async (jti) => {
         const exists = await client.exists(keyFor(jti));
         return exists === 1;
     } catch (error) {
-        console.error("isJtiRevoked error:", error.message);
+        logger.error({ err: error.message, jti }, "isJtiRevoked error");
         return false; // Fail open on Redis errors — see comment at top of file.
     }
 };

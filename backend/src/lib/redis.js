@@ -1,4 +1,5 @@
 import { createClient } from 'redis';
+import { logger } from './logger.js';
 
 let redisClient = null;
 let isConnected = false;
@@ -15,43 +16,37 @@ export const connectRedis = async () => {
             socket: {
                 reconnectStrategy: (retries) => {
                     if (retries > 3) {
-                        console.error('Redis: Too many reconnection attempts. Stopping.');
+                        logger.error('Redis: too many reconnection attempts, stopping');
                         return new Error('Too many retries');
                     }
-                    // Exponential backoff: 50ms, 100ms, 200ms, 400ms...
                     return Math.min(retries * 50, 3000);
                 }
             }
         });
 
-        // Error handler
         redisClient.on('error', (err) => {
-            console.error('Redis Client Error:', err.message);
+            logger.error({ err: err.message }, 'Redis client error');
             isConnected = false;
         });
 
-        // Connection success handler
         redisClient.on('connect', () => {
-            console.log('🔴 Redis connecting...');
+            logger.debug('Redis connecting');
         });
 
         redisClient.on('ready', () => {
-            console.log('✅ Redis connected successfully');
+            logger.info('Redis connected');
             isConnected = true;
         });
 
-        // Disconnection handler
         redisClient.on('end', () => {
-            console.log('❌ Redis disconnected');
+            logger.warn('Redis disconnected');
             isConnected = false;
         });
 
-        // Connect to Redis
         await redisClient.connect();
-
         return redisClient;
     } catch (error) {
-        console.warn('⚠️  Failed to connect to Redis - continuing without Redis:', error.message);
+        logger.warn({ err: error.message }, 'Failed to connect to Redis, continuing without it');
         redisClient = null;
         isConnected = false;
         return null;
@@ -79,7 +74,7 @@ export const isRedisConnected = () => isConnected;
 export const disconnectRedis = async () => {
     if (redisClient) {
         await redisClient.quit();
-        console.log('Redis connection closed');
+        logger.info('Redis connection closed');
     }
 };
 
@@ -95,7 +90,7 @@ export const cacheUser = async (userId, userData, ttl = 300) => {
         const key = `user:${userId}`;
         await client.setEx(key, ttl, JSON.stringify(userData));
     } catch (error) {
-        console.error('Error caching user:', error);
+        logger.error({ err: error, userId }, 'Error caching user');
     }
 };
 
@@ -111,7 +106,7 @@ export const getCachedUser = async (userId) => {
         const data = await client.get(key);
         return data ? JSON.parse(data) : null;
     } catch (error) {
-        console.error('Error getting cached user:', error);
+        logger.error({ err: error, userId }, 'Error getting cached user');
         return null;
     }
 };
@@ -126,7 +121,7 @@ export const deleteCachedUser = async (userId) => {
         const key = `user:${userId}`;
         await client.del(key);
     } catch (error) {
-        console.error('Error deleting cached user:', error);
+        logger.error({ err: error, userId }, 'Error deleting cached user');
     }
 };
 
@@ -140,7 +135,7 @@ export const setUserOnline = async (userId) => {
         await client.sAdd('online_users', userId);
         await client.set(`user:${userId}:lastSeen`, Date.now().toString());
     } catch (error) {
-        console.error('Error setting user online:', error);
+        logger.error({ err: error, userId }, 'Error setting user online');
     }
 };
 
@@ -154,7 +149,7 @@ export const setUserOffline = async (userId) => {
         await client.sRem('online_users', userId);
         await client.set(`user:${userId}:lastSeen`, Date.now().toString());
     } catch (error) {
-        console.error('Error setting user offline:', error);
+        logger.error({ err: error, userId }, 'Error setting user offline');
     }
 };
 
@@ -167,7 +162,7 @@ export const getOnlineUsers = async () => {
         const client = getRedisClient();
         return await client.sMembers('online_users');
     } catch (error) {
-        console.error('Error getting online users:', error);
+        logger.error({ err: error }, 'Error getting online users');
         return [];
     }
 };
@@ -183,7 +178,7 @@ export const mapSocketToUser = async (socketId, userId) => {
         await client.hSet('socket_user_map', socketId, userId);
         await client.set(`user:${userId}:socketId`, socketId);
     } catch (error) {
-        console.error('Error mapping socket to user:', error);
+        logger.error({ err: error, socketId, userId }, 'Error mapping socket to user');
     }
 };
 
@@ -197,7 +192,7 @@ export const getUserBySocketId = async (socketId) => {
         const client = getRedisClient();
         return await client.hGet('socket_user_map', socketId);
     } catch (error) {
-        console.error('Error getting user by socket ID:', error);
+        logger.error({ err: error, socketId }, 'Error getting user by socket ID');
         return null;
     }
 };
@@ -212,7 +207,7 @@ export const getSocketIdByUserId = async (userId) => {
         const client = getRedisClient();
         return await client.get(`user:${userId}:socketId`);
     } catch (error) {
-        console.error('Error getting socket ID by user ID:', error);
+        logger.error({ err: error, userId }, 'Error getting socket ID by user ID');
         return null;
     }
 };
@@ -230,7 +225,7 @@ export const removeSocketMapping = async (socketId) => {
             await client.del(`user:${userId}:socketId`);
         }
     } catch (error) {
-        console.error('Error removing socket mapping:', error);
+        logger.error({ err: error, socketId }, 'Error removing socket mapping');
     }
 };
 

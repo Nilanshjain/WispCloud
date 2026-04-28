@@ -1,7 +1,11 @@
 import { z } from 'zod';
+import { ValidationError } from '../lib/errors.js';
 
 /**
- * Validation middleware factory
+ * Validation middleware factory. Throws ValidationError on failure; the central
+ * error middleware converts it to the structured 400 response. Don't return the
+ * response here — that would bypass the central handler's logging + requestId.
+ *
  * @param {z.ZodSchema} schema - Zod schema to validate against
  * @param {string} source - Where to get data from ('body', 'query', 'params')
  */
@@ -14,17 +18,12 @@ export const validate = (schema, source = 'body') => {
             next();
         } catch (error) {
             if (error instanceof z.ZodError) {
-                console.log('Validation error:', JSON.stringify(error, null, 2));
                 const details = error.issues ? error.issues.map(err => ({
                     field: err.path.join('.'),
                     message: err.message,
                 })) : [];
-                return res.status(400).json({
-                    error: 'Validation failed',
-                    details,
-                });
+                return next(new ValidationError('Validation failed', details));
             }
-            console.log('Non-Zod error in validation:', error);
             next(error);
         }
     };
@@ -117,6 +116,92 @@ export const searchQuerySchema = z.object({
         .optional(),
 });
 
+// Group schemas
+const objectIdRegex = /^[0-9a-fA-F]{24}$/;
+
+export const groupIdParamSchema = z.object({
+    groupId: z.string().regex(objectIdRegex, 'Invalid group ID format'),
+});
+
+export const groupMemberParamSchema = z.object({
+    groupId: z.string().regex(objectIdRegex, 'Invalid group ID format'),
+    memberId: z.string().regex(objectIdRegex, 'Invalid member ID format'),
+});
+
+export const groupMessageParamSchema = z.object({
+    groupId: z.string().regex(objectIdRegex, 'Invalid group ID format'),
+    messageId: z.string().regex(objectIdRegex, 'Invalid message ID format'),
+});
+
+export const createGroupSchema = z.object({
+    name: z.string().trim().min(3, 'Group name must be at least 3 characters').max(50, 'Group name too long'),
+    description: z.string().trim().max(500, 'Description too long').optional(),
+    groupImage: z.string().optional(),
+    type: z.enum(['public', 'private']).optional(),
+    maxMembers: z.number().int().min(2).max(1000).optional(),
+    settings: z.object({
+        whoCanMessage: z.enum(['all', 'admins_only']).optional(),
+        whoCanAddMembers: z.enum(['all', 'admins_only', 'owner_only']).optional(),
+        requireApproval: z.boolean().optional(),
+    }).optional(),
+});
+
+export const updateGroupSchema = createGroupSchema.partial();
+
+export const addMemberSchema = z.object({
+    userIds: z.array(z.string().regex(objectIdRegex, 'Invalid user ID')).min(1, 'At least one user ID required').max(50, 'Too many users at once'),
+});
+
+export const updateMemberRoleSchema = z.object({
+    role: z.enum(['admin', 'member'], { message: 'Invalid role. Must be "admin" or "member"' }),
+});
+
+export const sendGroupMessageSchema = z.object({
+    text: z.string().trim().max(5000, 'Message too long').optional(),
+    image: z.string().optional(),
+    replyTo: z.string().regex(objectIdRegex, 'Invalid reply-to message ID').nullable().optional(),
+}).refine(
+    data => (data.text && data.text.trim().length > 0) || data.image,
+    { message: 'Either text or image must be provided' }
+);
+
+// Analytics query schemas
+export const analyticsDaysQuerySchema = z.object({
+    days: z.string()
+        .optional()
+        .transform(val => val ? parseInt(val, 10) : 30)
+        .refine(val => val > 0 && val <= 365, 'Days must be between 1 and 365'),
+});
+
+export const analyticsLimitQuerySchema = z.object({
+    limit: z.string()
+        .optional()
+        .transform(val => val ? parseInt(val, 10) : 10)
+        .refine(val => val > 0 && val <= 100, 'Limit must be between 1 and 100'),
+});
+
+// AI schemas — three endpoints share these required fields; optional question
+// for /ask validated again in the controller for the field-specific message.
+export const aiConversationSchema = z.object({
+    conversationId: z.string().regex(objectIdRegex, 'Invalid conversation ID'),
+    conversationType: z.enum(['dm', 'group'], { message: "conversationType must be 'dm' or 'group'" }),
+    since: z.string().datetime({ offset: true }).optional().or(z.string().refine(v => !isNaN(Date.parse(v)), 'Invalid since date').optional()),
+    lastN: z.number().int().min(1).max(500).optional(),
+});
+
+export const aiAskSchema = aiConversationSchema.extend({
+    question: z.string().trim().min(1, 'question is required').max(2000, 'question too long'),
+});
+
+// ChatInvite schemas
+export const sendInviteSchema = z.object({
+    receiverId: z.string().regex(objectIdRegex, 'Invalid receiver ID'),
+});
+
+export const inviteIdParamSchema = z.object({
+    inviteId: z.string().regex(objectIdRegex, 'Invalid invite ID format'),
+});
+
 export default {
     validate,
     signupSchema,
@@ -124,6 +209,21 @@ export default {
     updateProfileSchema,
     sendMessageSchema,
     userIdParamSchema,
+    userProfileParamSchema,
     paginationSchema,
     searchQuerySchema,
+    groupIdParamSchema,
+    groupMemberParamSchema,
+    groupMessageParamSchema,
+    createGroupSchema,
+    updateGroupSchema,
+    addMemberSchema,
+    updateMemberRoleSchema,
+    sendGroupMessageSchema,
+    analyticsDaysQuerySchema,
+    analyticsLimitQuerySchema,
+    aiConversationSchema,
+    aiAskSchema,
+    sendInviteSchema,
+    inviteIdParamSchema,
 };

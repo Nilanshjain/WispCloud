@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import User from "../models/user.model.js";
 import { isJtiRevoked } from "../lib/jtiBlocklist.js";
+import { logger } from "../lib/logger.js";
 
 // protectRoute — five checks in fail-closed order. Any failure returns 401 (or 403 if
 // the user is found but inactive — they're authenticated but forbidden by ban policy).
@@ -73,8 +74,11 @@ export const protectRoute = async (req, res, next) => {
         req.tokenExp = decoded.exp;
         next();
     } catch (error) {
-        // Truly unexpected (DB connection lost mid-query, etc.) — 500.
-        console.error("protectRoute unexpected error:", error.message);
-        return res.status(500).json({ message: "Internal server error" });
+        // Truly unexpected (DB connection lost mid-query, etc.) — propagate to
+        // central error middleware via next(error). Don't return 500 inline; the
+        // error middleware owns the structured response shape + logging.
+        const log = req.log || logger;
+        log.error({ err: error }, "protectRoute unexpected error");
+        return next(error);
     }
 };

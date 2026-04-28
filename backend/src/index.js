@@ -19,6 +19,8 @@ import analyticsRoutes from "./routes/analytics.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 import { app, server, initializeSocketIO } from "./lib/socket.js";
 import { globalLimiter } from "./middleware/rateLimiter.js";
+import { logger, httpLogger } from "./lib/logger.js";
+import { errorHandler } from "./middleware/errorHandler.js";
 
 // Load environment variables. Refuses to boot if any key listed in `.env.example` is missing.
 // `allowEmptyValues: false` (default) — a key set to empty is treated as missing.
@@ -31,6 +33,12 @@ configureGoogleStrategy();
 
 const PORT = process.env.PORT || 5001;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+// Request-scoped logger + request ID. Mounted FIRST so every subsequent middleware
+// + route handler has req.log available and the X-Request-Id header is set early.
+// Probe endpoints (/healthz, /readyz) are excluded from auto-logs (see logger.js)
+// to keep keep-alive cron output quiet.
+app.use(httpLogger);
 
 // Security middleware - Helmet.js
 //sets rules in the response header to protect against common vulnerabilities
@@ -99,9 +107,9 @@ app.use("/api/auth", authRoutes);
 // Only enable OAuth routes if credentials are configured
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
     app.use("/api/auth/oauth", oauthRoutes);
-    console.log('✅ OAuth routes enabled');
+    logger.info('OAuth routes enabled');
 } else {
-    console.log('⚠️  OAuth routes disabled - credentials not configured');
+    logger.warn('OAuth routes disabled, credentials not configured');
     // Provide helpful error message when OAuth routes are accessed but disabled
     app.use("/api/auth/oauth", (req, res) => {
         res.status(503).json({
@@ -142,41 +150,38 @@ app.get("/readyz", (req, res) => {
 });
 
 
-// 404 handler
-app.use((req, res) => {
-    res.status(404).json({ message: "Route not found" });
-});
-
-// Global error handler
-app.use((err, req, res, next) => {
-    console.error('Error:', err);
-    res.status(err.status || 500).json({
-        message: err.message || "Internal server error",
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+// 404 handler — uses the structured shape via the central error middleware.
+// Importing inline to avoid pulling NotFoundError into the top of the file
+// just for one mount.
+app.use((req, res, next) => {
+    import("./lib/errors.js").then(({ NotFoundError }) => {
+        next(new NotFoundError(`Route not found: ${req.method} ${req.url}`));
     });
 });
+
+// Central error middleware — must be last, must have 4 args (Express identifies
+// error handlers by parameter count). Maps thrown errors → structured JSON
+// `{ error: { code, message, requestId, details? } }` + correct status code,
+// + logs via req.log so the entry carries the request ID.
+app.use(errorHandler);
 
 // Start server with database and Redis connections
 const startServer = async () => {
     try {
-        // Connect to MongoDB
         await connectDB();
-
-        // Connect to Redis
         await connectRedis();
-
-        // Initialize Socket.IO with Redis Adapter
         await initializeSocketIO();
 
-        // Start the HTTP server
         server.listen(PORT, () => {
-            console.log(`\n🚀 WispCloud Server running on port ${PORT}`);
-            console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
-            console.log(`🌐 Frontend URL: ${FRONTEND_URL}\n`);
+            logger.info({
+                port: PORT,
+                env: process.env.NODE_ENV || "development",
+                frontend: FRONTEND_URL,
+            }, "WispCloud server started");
         });
 
     } catch (error) {
-        console.error('❌ Failed to start server:', error);
+        logger.fatal({ err: error }, "Failed to start server");
         process.exit(1);
     }
 };
@@ -189,25 +194,25 @@ const startServer = async () => {
 const shutdown = async (signal) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`\n⚠️  ${signal} received. Draining...`);
+    logger.info({ signal }, "Shutdown signal received, draining");
 
     // Hard-exit guard. .unref() so the timer itself doesn't keep the process alive.
     const hardExit = setTimeout(() => {
-        console.error('❌ Graceful shutdown timed out after 25s. Forcing exit.');
+        logger.error("Graceful shutdown timed out after 25s, forcing exit");
         process.exit(1);
     }, 25_000);
     hardExit.unref();
 
     server.close(async (err) => {
-        if (err) console.error('HTTP server close error:', err);
+        if (err) logger.error({ err }, "HTTP server close error");
         try {
             await mongoose.connection.close();
-            console.log('✅ MongoDB closed');
+            logger.info("MongoDB connection closed");
             await disconnectRedis();
-            console.log('✅ Shutdown complete');
+            logger.info("Shutdown complete");
             process.exit(0);
         } catch (closeErr) {
-            console.error('❌ Error during dependency cleanup:', closeErr);
+            logger.error({ err: closeErr }, "Error during dependency cleanup");
             process.exit(1);
         }
     });
