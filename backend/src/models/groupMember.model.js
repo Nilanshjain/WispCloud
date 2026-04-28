@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import softDeletePlugin from "../lib/softDeletePlugin.js";
 
 const groupMemberSchema = new mongoose.Schema(
     {
@@ -6,14 +7,14 @@ const groupMemberSchema = new mongoose.Schema(
             type: mongoose.Schema.Types.ObjectId,
             ref: "Group",
             required: true,
-            index: true,
+            // NOTE: dropped index:true here — covered by compound index { groupId: 1, userId: 1 } via prefix rule.
         },
 
         userId: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
             required: true,
-            index: true,
+            // NOTE: dropped index:true here — covered by compound index { userId: 1, status: 1 } via prefix rule.
         },
 
         // Member role in the group
@@ -83,13 +84,23 @@ const groupMemberSchema = new mongoose.Schema(
     }
 );
 
-// Compound indexes
+// Compound indexes — ESR-ordered, each one matches a real query in group.controllers.js / socket.js.
+// { groupId, userId } unique — prevents duplicate memberships; serves "is user X in group Y" check.
+// { groupId, status } — getGroupMembers (status='active'), capacity countDocuments.
+// { userId, status } — getUserGroups (sidebar), socket.js connect-time group join.
+// { groupId, role } — owner/admin permission checks.
 groupMemberSchema.index({ groupId: 1, userId: 1 }, { unique: true });
 groupMemberSchema.index({ groupId: 1, status: 1 });
 groupMemberSchema.index({ userId: 1, status: 1 });
 groupMemberSchema.index({ groupId: 1, role: 1 });
 
-// Pre-save middleware to set permissions based on role
+// Soft-delete: GroupMember is the cascade target — deleting a Group must also soft-delete its members,
+// otherwise getUserGroups + the socket connect path would still surface ghost memberships.
+groupMemberSchema.plugin(softDeletePlugin);
+
+// Pre-save middleware to set permissions based on role.
+// 🚩 KNOWN FOOTGUN: this only fires on .save(); bypassed by updateMany / findOneAndUpdate / findByIdAndUpdate.
+// Migration to instance-method or pre('findOneAndUpdate') hook lands in M12 RBAC pass.
 groupMemberSchema.pre('save', function(next) {
     if (this.isModified('role')) {
         switch(this.role) {

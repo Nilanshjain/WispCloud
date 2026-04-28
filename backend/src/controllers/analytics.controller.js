@@ -9,6 +9,9 @@ import GroupMember from '../models/groupMember.model.js';
  */
 export const getPlatformStats = async (req, res) => {
     try {
+        // Lifetime totals on the platform stats dashboard — bypass the soft-delete auto-filter
+        // via .withDeleted() so the headline numbers don't drop when something gets soft-deleted.
+        // User has no soft-delete plugin applied, so its counts don't need the bypass.
         const [
             totalUsers,
             totalMessages,
@@ -17,18 +20,18 @@ export const getPlatformStats = async (req, res) => {
             oauthUsers,
         ] = await Promise.all([
             User.countDocuments(),
-            Message.countDocuments(),
-            Group.countDocuments(),
+            Message.find().withDeleted().countDocuments(),
+            Group.find().withDeleted().countDocuments(),
             User.countDocuments({ isActive: true }),
             User.countDocuments({ authProvider: { $ne: 'local' } }),
         ]);
 
-        // Calculate messages sent today
+        // Messages today — lifetime metric, include soft-deleted.
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const messagesToday = await Message.countDocuments({
-            createdAt: { $gte: today },
-        });
+        const messagesToday = await Message.find({ createdAt: { $gte: today } })
+            .withDeleted()
+            .countDocuments();
 
         // Calculate new users this week
         const weekAgo = new Date();
@@ -133,13 +136,17 @@ export const getMessageActivity = async (req, res) => {
  */
 export const getGroupStats = async (req, res) => {
     try {
+        // Lifetime group totals — bypass soft-delete filter to keep dashboard numbers stable.
+        // activeGroups uses { isActive: true } which is a separate semantic from soft-delete
+        // (a group can be inactive without being deleted). Auto-filter still excludes soft-deleted
+        // from activeGroups, which is the correct behavior — a deleted group is not active.
         const [
             totalGroups,
             activeGroups,
             avgGroupSize,
             topGroups,
         ] = await Promise.all([
-            Group.countDocuments(),
+            Group.find().withDeleted().countDocuments(),
             Group.countDocuments({ isActive: true }),
             GroupMember.aggregate([
                 {

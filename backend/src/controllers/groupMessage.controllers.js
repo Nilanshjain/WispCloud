@@ -199,9 +199,10 @@ export const deleteGroupMessage = async (req, res) => {
             return res.status(403).json({ error: 'You do not have permission to delete this message' });
         }
 
-        await Message.findByIdAndDelete(messageId);
+        // Soft-delete via the instance method (sets deletedAt + deletedBy, preserves audit trail).
+        await message.softDelete(userId);
 
-        // Update group stats
+        // Update group stats — counter still decrements because the message no longer counts as visible.
         const group = await Group.findById(groupId);
         if (group) {
             group.stats.totalMessages = Math.max(0, group.stats.totalMessages - 1);

@@ -84,7 +84,7 @@ export const updateGroup = async (req, res) => {
     }
 };
 
-// Delete group (owner only)
+// Delete group (owner only) — soft-delete with cascade to memberships + messages.
 export const deleteGroup = async (req, res) => {
     try {
         const { groupId } = req.params;
@@ -102,14 +102,25 @@ export const deleteGroup = async (req, res) => {
             return res.status(403).json({ error: 'Only the group owner can delete the group' });
         }
 
-        // Delete all group members
-        await GroupMember.deleteMany({ groupId });
+        const now = new Date();
 
-        // Delete all group messages
-        await Message.deleteMany({ receiverId: groupId });
+        // Cascade soft-delete: memberships + messages first, then the group itself.
+        // updateMany bypasses pre('save'), which is fine here — no permission middleware needs to fire.
+        await GroupMember.updateMany(
+            { groupId },
+            { $set: { deletedAt: now, deletedBy: userId } }
+        );
+        await Message.updateMany(
+            { receiverId: groupId, isGroupMessage: true },
+            { $set: { deletedAt: now, deletedBy: userId } }
+        );
 
-        // Delete the group
-        await Group.findByIdAndDelete(groupId);
+        // Group itself — load + softDelete() to use the instance method.
+        // Cannot use updateMany on the parent because we want a single audited document.
+        const group = await Group.findById(groupId);
+        if (group) {
+            await group.softDelete(userId);
+        }
 
         res.status(200).json({ message: 'Group deleted successfully' });
     } catch (error) {

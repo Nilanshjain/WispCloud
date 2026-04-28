@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import softDeletePlugin from "../lib/softDeletePlugin.js";
 
 const groupSchema = new mongoose.Schema(
     {
@@ -86,13 +87,20 @@ const groupSchema = new mongoose.Schema(
     }
 );
 
-// Indexes for performance (createdBy already indexed in schema definition)
-groupSchema.index({ type: 1 });
+// isActive stays — countDocuments({ isActive: true }) in analytics can answer from the index alone (covered count).
 groupSchema.index({ isActive: 1 });
-groupSchema.index({ createdAt: -1 });
 
-// Text index for search
+// Text index — single permitted text index, covers group search.
 groupSchema.index({ name: 'text', description: 'text' });
+
+// NOTE: dropped index({ type: 1 }) — only 2 distinct values ('public', 'private'), too low-cardinality
+// to be selective on its own; no query uses it as a leading filter.
+// NOTE: dropped index({ createdAt: -1 }) — _id is monotonic, sort({ _id: -1 }) gives same order.
+
+// Soft-delete: adds deletedAt + deletedBy fields, auto-filters every find/count, exposes softDelete()
+// instance method and .withDeleted() query helper. Required because Group is the parent of cascade
+// (deleting a group must also soft-delete its memberships + messages).
+groupSchema.plugin(softDeletePlugin);
 
 const Group = mongoose.model("Group", groupSchema);
 

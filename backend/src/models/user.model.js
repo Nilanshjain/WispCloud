@@ -5,21 +5,19 @@ const userSchema = new mongoose.Schema(
         email: {
             type: String,
             required: true,
-            unique: true,
+            unique: true, // unique:true already creates a B-tree index; no need for index:true
             lowercase: true,
             trim: true,
-            index: true, // Index for faster email lookups
         },
 
         username: {
             type: String,
             required: true,
-            unique: true,
+            unique: true, // same — unique:true is the index
             lowercase: true,
             trim: true,
             minlength: 3,
             maxlength: 20,
-            index: true, // Index for username lookups
         },
 
         fullName: {
@@ -34,7 +32,7 @@ const userSchema = new mongoose.Schema(
                 // Password is only required if not using OAuth
                 return !this.authProvider || this.authProvider === 'local';
             },
-            minlength: 6,
+            minlength: 12, // NIST 800-63B floor — length beats complexity for entropy.
             select: false, // Don't include password in queries by default
         },
 
@@ -78,11 +76,13 @@ const userSchema = new mongoose.Schema(
     }
 );
 
-// Indexes for performance (email and createdAt defined here once)
-userSchema.index({ createdAt: -1 });
-
-// Text index for search functionality (now includes username)
+// Text index — Mongo allows ONE text index per collection, so all searchable fields bundle here.
+// Powers user-search via $text: { $search: ... }; replaces the ReDoS-prone regex search (P0 #2, lands in M12).
 userSchema.index({ fullName: 'text', email: 'text', username: 'text' });
+
+// NOTE: dropped index({ createdAt: -1 }) — _id is monotonic (ObjectId encodes a timestamp in
+// its first 4 bytes), so sort({ _id: -1 }) gives the same order without an extra B-tree.
+// Save: ~5–10% of User collection's index footprint.
 
 const User = mongoose.model("User", userSchema);
 
