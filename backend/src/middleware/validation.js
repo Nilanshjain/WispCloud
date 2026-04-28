@@ -156,10 +156,26 @@ export const updateMemberRoleSchema = z.object({
     role: z.enum(['admin', 'member'], { message: 'Invalid role. Must be "admin" or "member"' }),
 });
 
+// Matches sendMessageSchema's defensive shape: frontend may pass `null` (default
+// state when no image / no reply) which `z.string().optional()` would reject —
+// `optional()` allows `undefined` only, not `null`. Union with z.null() makes it
+// tolerant. The refine still enforces "must have text OR image" semantics.
 export const sendGroupMessageSchema = z.object({
-    text: z.string().trim().max(5000, 'Message too long').optional(),
-    image: z.string().optional(),
-    replyTo: z.string().regex(objectIdRegex, 'Invalid reply-to message ID').nullable().optional(),
+    text: z.union([
+        z.string().trim().max(5000, 'Message too long'),
+        z.null(),
+        z.undefined(),
+    ]).optional(),
+    image: z.union([
+        z.string(),
+        z.null(),
+        z.undefined(),
+    ]).optional(),
+    replyTo: z.union([
+        z.string().regex(objectIdRegex, 'Invalid reply-to message ID'),
+        z.null(),
+        z.undefined(),
+    ]).optional(),
 }).refine(
     data => (data.text && data.text.trim().length > 0) || data.image,
     { message: 'Either text or image must be provided' }
