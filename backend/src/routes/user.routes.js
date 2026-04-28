@@ -14,8 +14,10 @@ const router = express.Router();
 // All routes are protected
 router.use(protectRoute);
 
-// Search users by name or email (rate limiter removed for development)
-router.get("/search", validate(searchQuerySchema, 'query'), searchUsers);
+// Search users by name or email — apiLimiter (200/min) caps abuse on the
+// most expensive user route (text-index lookup). Restored after the
+// "removed for development" comment from the M01 era.
+router.get("/search", apiLimiter, validate(searchQuerySchema, 'query'), searchUsers);
 
 // Get recent conversations
 router.get("/recent", getRecentChats);

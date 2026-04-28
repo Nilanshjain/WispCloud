@@ -95,8 +95,11 @@ app.use(cors({
     credentials: true,
 }));
 
-// Global rate limiting - Apply to all requests
-app.use(globalLimiter);
+// Global rate limiting — mounted on /api so probe endpoints (/healthz, /readyz)
+// stay exempt. Render's keep-alive cron pings /healthz every 14 minutes; without
+// this exemption it would count against the 500/15min IP budget AND a real
+// burst from a buggy client could mask probe failures during a live incident.
+app.use("/api", globalLimiter);
 
 // Drain flag, flipped to true on SIGTERM/SIGINT so /readyz can signal "drain me" to load balancers.
 let shuttingDown = false;

@@ -1,6 +1,7 @@
 import express from "express";
 import { protectRoute } from "../middleware/auth.middleware.js";
 import { validate, userIdParamSchema } from "../middleware/validation.js";
+import { apiLimiter } from "../middleware/rateLimiter.js";
 import {
   sendChatInvite,
   acceptChatInvite,
@@ -12,26 +13,17 @@ import {
 
 const router = express.Router();
 
-// Send a chat invite
-router.post("/send/:id",
-  protectRoute,
-  validate(userIdParamSchema, 'params'),
-  sendChatInvite
-);
+// All invite routes are auth-required + apiLimiter capped (200/min) — defense
+// against invite spam. Per-route limits could be tighter on the write paths
+// (send/accept/reject/cancel) but globalLimiter + apiLimiter already provide
+// two layers; tighter caps land in M12 if abuse is observed.
+router.use(protectRoute, apiLimiter);
 
-// Accept an invite
-router.put("/accept/:id", protectRoute, acceptChatInvite);
-
-// Reject an invite
-router.put("/reject/:id", protectRoute, rejectChatInvite);
-
-// Get pending invites (received)
-router.get("/pending", protectRoute, getPendingInvites);
-
-// Get sent invites
-router.get("/sent", protectRoute, getSentInvites);
-
-// Cancel a sent invite
-router.delete("/cancel/:id", protectRoute, cancelChatInvite);
+router.post("/send/:id", validate(userIdParamSchema, 'params'), sendChatInvite);
+router.put("/accept/:id", acceptChatInvite);
+router.put("/reject/:id", rejectChatInvite);
+router.get("/pending", getPendingInvites);
+router.get("/sent", getSentInvites);
+router.delete("/cancel/:id", cancelChatInvite);
 
 export default router;
