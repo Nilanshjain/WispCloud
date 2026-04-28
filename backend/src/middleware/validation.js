@@ -202,6 +202,30 @@ export const inviteIdParamSchema = z.object({
     inviteId: z.string().regex(objectIdRegex, 'Invalid invite ID format'),
 });
 
+// Socket event schemas — same z.parse() story applied to socket.io payloads.
+// Validation runs inside the socket.on(...) handler before any business logic.
+// Failure = silent ignore (we don't disconnect; the client could be a buggy
+// older version that's still mostly working). Structured warn-log with reqId
+// equivalent (socketId) for debugging.
+
+export const socketTypingSchema = z.object({
+    receiverId: z.string().regex(objectIdRegex, 'Invalid receiver ID'),
+    isTyping: z.boolean(),
+});
+
+export const socketGroupTypingSchema = z.object({
+    groupId: z.string().regex(objectIdRegex, 'Invalid group ID'),
+    isTyping: z.boolean(),
+});
+
+export const socketJoinGroupSchema = z.object({
+    groupId: z.string().regex(objectIdRegex, 'Invalid group ID'),
+});
+
+export const socketLeaveGroupSchema = z.object({
+    groupId: z.string().regex(objectIdRegex, 'Invalid group ID'),
+});
+
 export default {
     validate,
     signupSchema,
@@ -226,4 +250,8 @@ export default {
     aiAskSchema,
     sendInviteSchema,
     inviteIdParamSchema,
+    socketTypingSchema,
+    socketGroupTypingSchema,
+    socketJoinGroupSchema,
+    socketLeaveGroupSchema,
 };

@@ -2,6 +2,7 @@ import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
+import { EVENTS } from "../lib/socketEvents";
 
 export const useChatInviteStore = create((set, get) => ({
   pendingInvites: [],
@@ -104,27 +105,27 @@ export const useChatInviteStore = create((set, get) => ({
     const { socket } = useAuthStore.getState();
     if (!socket) return;
 
-    socket.on("newChatInvite", (invite) => {
+    socket.on(EVENTS.NEW_CHAT_INVITE, (invite) => {
       set((state) => ({
         pendingInvites: [invite, ...state.pendingInvites],
       }));
       toast.success(`New chat invite from ${invite.sender.fullName}`);
     });
 
-    socket.on("chatInviteAccepted", (data) => {
+    socket.on(EVENTS.CHAT_INVITE_ACCEPTED, (data) => {
       set((state) => ({
         sentInvites: state.sentInvites.filter((inv) => inv._id !== data.inviteId),
       }));
       toast.success(`${data.acceptedBy.fullName} accepted your chat invite!`);
     });
 
-    socket.on("chatInviteRejected", (data) => {
+    socket.on(EVENTS.CHAT_INVITE_REJECTED, (data) => {
       set((state) => ({
         sentInvites: state.sentInvites.filter((inv) => inv._id !== data.inviteId),
       }));
     });
 
-    socket.on("chatInviteCancelled", (data) => {
+    socket.on(EVENTS.CHAT_INVITE_CANCELLED, (data) => {
       set((state) => ({
         pendingInvites: state.pendingInvites.filter((inv) => inv._id !== data.inviteId),
       }));

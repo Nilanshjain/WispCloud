@@ -1,15 +1,47 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useChatStore } from "../store/useChatStore";
 import { useAuthStore } from "../store/useAuthStore";
 import { Image, Send, X } from "lucide-react";
 import toast from "react-hot-toast";
+import { EVENTS } from "../lib/socketEvents";
 
 const MessageInput = ({ replyingTo, onCancelReply }) => {
   const [text, setText] = useState("");
   const [imagePreview, setImagePreview] = useState(null);
   const fileInputRef = useRef(null);
+  const typingTimeoutRef = useRef(null);
+  const isTypingRef = useRef(false);
   const { sendMessage, selectedUser } = useChatStore();
   const { authUser } = useAuthStore();
+
+  const handleTyping = () => {
+    const { socket } = useAuthStore.getState();
+    if (!socket || !selectedUser) return;
+
+    if (!isTypingRef.current) {
+      isTypingRef.current = true;
+      socket.emit(EVENTS.TYPING, { receiverId: selectedUser._id, isTyping: true });
+    }
+
+    clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(() => {
+      isTypingRef.current = false;
+      socket.emit(EVENTS.TYPING, { receiverId: selectedUser._id, isTyping: false });
+    }, 2000);
+  };
+
+  const stopTyping = () => {
+    clearTimeout(typingTimeoutRef.current);
+    if (isTypingRef.current) {
+      isTypingRef.current = false;
+      const { socket } = useAuthStore.getState();
+      socket?.emit("typing", { receiverId: selectedUser?._id, isTyping: false });
+    }
+  };
+
+  useEffect(() => {
+    return () => stopTyping();
+  }, [selectedUser?._id]);
 
   const handleImageChange = (e) => {
     e.preventDefault();
@@ -46,10 +78,11 @@ const MessageInput = ({ replyingTo, onCancelReply }) => {
         replyTo: replyingTo?._id,
       });
 
-      // Clear form
+      // Clear form and stop typing indicator
       setText("");
       setImagePreview(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+      stopTyping();
       onCancelReply?.();
     } catch (error) {
       console.error("Failed to send message:", error);
@@ -108,7 +141,10 @@ const MessageInput = ({ replyingTo, onCancelReply }) => {
             className="w-full input input-bordered rounded-lg input-sm sm:input-md"
             placeholder="Type a message..."
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => {
+              setText(e.target.value);
+              handleTyping();
+            }}
           />
           <input
             type="file"

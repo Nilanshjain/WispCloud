@@ -17,7 +17,7 @@ import oauthRoutes from "./routes/oauth.routes.js";
 import groupRoutes from "./routes/group.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
-import { app, server, initializeSocketIO } from "./lib/socket.js";
+import { app, server, io, initializeSocketIO } from "./lib/socket.js";
 import { globalLimiter } from "./middleware/rateLimiter.js";
 import { logger, httpLogger } from "./lib/logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -202,6 +202,17 @@ const shutdown = async (signal) => {
         process.exit(1);
     }, 25_000);
     hardExit.unref();
+
+    // Close Socket.IO first so connected clients receive a disconnect event and
+    // can render their offline state. io.close() also stops accepting new socket
+    // upgrades. Without this, sockets get yanked at process exit and clients see
+    // an opaque transport close, which fires their own retry/reconnect storm.
+    try {
+        io.close();
+        logger.info("Socket.IO closed");
+    } catch (sockErr) {
+        logger.error({ err: sockErr }, "Error closing Socket.IO");
+    }
 
     server.close(async (err) => {
         if (err) logger.error({ err }, "HTTP server close error");

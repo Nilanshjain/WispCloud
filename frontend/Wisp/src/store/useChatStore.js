@@ -2,6 +2,7 @@ import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
 import { useAuthStore } from "./useAuthStore";
+import { EVENTS } from "../lib/socketEvents";
 
 export const useChatStore = create((set, get) => ({
   messages: [],
@@ -9,6 +10,8 @@ export const useChatStore = create((set, get) => ({
   selectedUser: null,
   isUsersLoading: false,
   isMessagesLoading: false,
+  typingUsers: {},
+  unreadCounts: {},
 
   getUsers: async () => {
     const { isUsersLoading } = get();
@@ -21,7 +24,7 @@ export const useChatStore = create((set, get) => ({
     } catch (error) {
       const message = error.response?.data?.message || error.response?.data?.error;
       if (error.response?.status === 429) {
-        toast.error("Too many requests. Please wait a moment.");
+        console.warn("Rate limited on getUsers");
       } else if (message) {
         toast.error(message);
       } else {
@@ -63,17 +66,8 @@ export const useChatStore = create((set, get) => ({
 
     const socket = useAuthStore.getState().socket;
 
-    socket.on("newMessage", (newMessage) => {
-      const isMessageSentFromSelectedUser = newMessage.senderId === selectedUser._id;
-      if (!isMessageSentFromSelectedUser) return;
-
-      set({
-        messages: [...get().messages, newMessage],
-      });
-    });
-
     // Subscribe to read receipts
-    socket.on("messagesRead", (data) => {
+    socket.on(EVENTS.MESSAGES_READ, (data) => {
       const { messageIds, readAt } = data;
       set((state) => ({
         messages: state.messages.map((msg) =>
@@ -87,7 +81,6 @@ export const useChatStore = create((set, get) => ({
 
   unsubscribeFromMessages: () => {
     const socket = useAuthStore.getState().socket;
-    socket.off("newMessage");
     socket.off("messagesRead");
   },
 
@@ -100,5 +93,40 @@ export const useChatStore = create((set, get) => ({
     }
   },
 
-  setSelectedUser: (selectedUser) => set({ selectedUser }),
+  setUserTyping: (userId, isTyping) => {
+    set((state) => ({
+      typingUsers: { ...state.typingUsers, [userId]: isTyping },
+    }));
+    if (isTyping) {
+      setTimeout(() => {
+        if (get().typingUsers[userId]) {
+          set((state) => ({
+            typingUsers: { ...state.typingUsers, [userId]: false },
+          }));
+        }
+      }, 3000);
+    }
+  },
+
+  incrementUnread: (userId) => {
+    set((state) => ({
+      unreadCounts: {
+        ...state.unreadCounts,
+        [userId]: (state.unreadCounts[userId] || 0) + 1,
+      },
+    }));
+  },
+
+  clearUnread: (userId) => {
+    set((state) => ({
+      unreadCounts: { ...state.unreadCounts, [userId]: 0 },
+    }));
+  },
+
+  setSelectedUser: (selectedUser) => {
+    set({ selectedUser });
+    if (selectedUser) {
+      get().clearUnread(selectedUser._id);
+    }
+  },
 }));

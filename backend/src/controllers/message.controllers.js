@@ -3,6 +3,7 @@ import Message from "../models/message.model.js";
 import ChatInvite from "../models/chatInvite.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { getReceiverSocketId, io } from "../lib/socket.js";
+import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 
 export const getUsersForSidebar = asyncHandler(async (req, res) => {
@@ -125,7 +126,7 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
     const receiverSocketId = await getReceiverSocketId(receiverId);
     if (receiverSocketId) {
-        io.to(receiverSocketId).emit("newMessage", newMessage);
+        io.to(receiverSocketId).emit(EVENTS.NEW_MESSAGE, newMessage);
     }
 
     res.status(201).json(newMessage);
@@ -148,7 +149,7 @@ export const markMessagesAsRead = asyncHandler(async (req, res) => {
 
     const senderSocketId = await getReceiverSocketId(senderId);
     if (senderSocketId) {
-        io.to(senderSocketId).emit("messagesRead", {
+        io.to(senderSocketId).emit(EVENTS.MESSAGES_READ, {
             readBy: receiverId,
             messageIds: readMessages.map((m) => m._id),
             readAt: new Date(),

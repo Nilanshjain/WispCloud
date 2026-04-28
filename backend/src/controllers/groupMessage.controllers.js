@@ -3,6 +3,7 @@ import GroupMember from "../models/groupMember.model.js";
 import Message from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
 import { io } from "../lib/socket.js";
+import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
 import { ForbiddenError, NotFoundError } from "../lib/errors.js";
 
@@ -55,7 +56,7 @@ export const sendGroupMessage = asyncHandler(async (req, res) => {
             populate: { path: "senderId", select: "username profilePic fullName" },
         });
 
-    io.to(groupId.toString()).emit("newGroupMessage", { message: populatedMessage, groupId });
+    io.to(groupId.toString()).emit(EVENTS.NEW_GROUP_MESSAGE, { message: populatedMessage, groupId });
 
     res.status(201).json(populatedMessage);
 });
@@ -124,7 +125,7 @@ export const deleteGroupMessage = asyncHandler(async (req, res) => {
         await group.save();
     }
 
-    io.to(groupId.toString()).emit("groupMessageDeleted", { messageId, groupId });
+    io.to(groupId.toString()).emit(EVENTS.GROUP_MESSAGE_DELETED, { messageId, groupId });
 
     res.status(200).json({ message: "Message deleted successfully" });
 });

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import toast from 'react-hot-toast';
 import { axiosInstance } from '../lib/axios';
 import { useAuthStore } from './useAuthStore';
+import { EVENTS } from '../lib/socketEvents';
 
 export const useGroupStore = create((set, get) => ({
     groups: [],
@@ -12,12 +13,15 @@ export const useGroupStore = create((set, get) => ({
 
     // Fetch user's groups
     getUserGroups: async () => {
+        if (get().isGroupsLoading) return;
         set({ isGroupsLoading: true });
         try {
             const res = await axiosInstance.get('/groups/user/groups');
             set({ groups: res.data });
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to fetch groups');
+            if (error.response?.status !== 429) {
+                toast.error(error.response?.data?.error || 'Failed to fetch groups');
+            }
         } finally {
             set({ isGroupsLoading: false });
         }
@@ -231,7 +235,7 @@ export const useGroupStore = create((set, get) => ({
         const { socket } = useAuthStore.getState();
         if (!socket) return;
 
-        socket.on('newGroupMessage', ({ message, groupId }) => {
+        socket.on(EVENTS.NEW_GROUP_MESSAGE, ({ message, groupId }) => {
             const { selectedGroup, groupMessages } = get();
 
             // Add message if it's for the currently selected group
@@ -249,7 +253,7 @@ export const useGroupStore = create((set, get) => ({
             }));
         });
 
-        socket.on('groupMessageDeleted', ({ messageId, groupId }) => {
+        socket.on(EVENTS.GROUP_MESSAGE_DELETED, ({ messageId, groupId }) => {
             const { selectedGroup } = get();
 
             // Remove message if it's for the currently selected group
@@ -262,7 +266,7 @@ export const useGroupStore = create((set, get) => ({
             }
         });
 
-        socket.on('groupJoined', ({ groupId }) => {
+        socket.on(EVENTS.GROUP_JOINED, ({ groupId }) => {
             // Refresh groups list when user joins a new group
             get().getUserGroups();
         });
@@ -283,7 +287,7 @@ export const useGroupStore = create((set, get) => ({
         const { socket } = useAuthStore.getState();
         if (!socket) return;
 
-        socket.emit('joinGroup', { groupId });
+        socket.emit(EVENTS.JOIN_GROUP, { groupId });
     },
 
     // Leave a group room via Socket.IO
@@ -291,6 +295,6 @@ export const useGroupStore = create((set, get) => ({
         const { socket } = useAuthStore.getState();
         if (!socket) return;
 
-        socket.emit('leaveGroup', { groupId });
+        socket.emit(EVENTS.LEAVE_GROUP, { groupId });
     },
 }));
