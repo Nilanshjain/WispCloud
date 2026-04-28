@@ -1,4 +1,5 @@
 import cloudinary from "../lib/cloudinary.js";
+import { withTimeout } from "../lib/externalCall.js";
 import jwt from "jsonwebtoken";
 import {
     generateAccessToken,
@@ -168,7 +169,9 @@ export const updateProfile = asyncHandler(async (req, res) => {
 
     if (!profilePic) throw new ValidationError("Profile pic is required");
 
-    const uploadResponse = await cloudinary.uploader.upload(profilePic);
+    const uploadResponse = await withTimeout("cloudinary.upload", 30000, () =>
+        cloudinary.uploader.upload(profilePic)
+    );
     const updatedUser = await User.findByIdAndUpdate(
         userId,
         { profilePic: uploadResponse.secure_url },

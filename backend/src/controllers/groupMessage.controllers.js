@@ -2,6 +2,7 @@ import Group from "../models/group.model.js";
 import GroupMember from "../models/groupMember.model.js";
 import Message from "../models/message.model.js";
 import cloudinary from "../lib/cloudinary.js";
+import { withTimeout } from "../lib/externalCall.js";
 import { io } from "../lib/socket.js";
 import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -31,7 +32,9 @@ export const sendGroupMessage = asyncHandler(async (req, res) => {
 
     let imageUrl;
     if (image) {
-        const uploadResponse = await cloudinary.uploader.upload(image);
+        const uploadResponse = await withTimeout("cloudinary.upload", 30000, () =>
+            cloudinary.uploader.upload(image)
+        );
         imageUrl = uploadResponse.secure_url;
     }
 

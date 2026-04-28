@@ -2,6 +2,7 @@ import User from "../models/user.model.js";
 import Message from "../models/message.model.js";
 import ChatInvite from "../models/chatInvite.model.js";
 import cloudinary from "../lib/cloudinary.js";
+import { withTimeout } from "../lib/externalCall.js";
 import { io, userRoom } from "../lib/socket.js";
 import { EVENTS } from "../lib/socketEvents.js";
 import { asyncHandler } from "../lib/asyncHandler.js";
@@ -102,7 +103,9 @@ export const sendMessage = asyncHandler(async (req, res) => {
 
     let imageUrl;
     if (image) {
-        const uploadResponse = await cloudinary.uploader.upload(image);
+        const uploadResponse = await withTimeout("cloudinary.upload", 30000, () =>
+            cloudinary.uploader.upload(image)
+        );
         imageUrl = uploadResponse.secure_url;
     }
 
