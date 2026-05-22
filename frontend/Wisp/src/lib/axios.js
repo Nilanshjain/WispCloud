@@ -12,6 +12,11 @@ export const axiosInstance = axios.create({
     // and works in dev too. Has no effect on requests that don't have a same-origin
     // or sameSite-allowed cookie to send.
     withCredentials: true,
+    // Bound every request so an unreachable or stalled backend rejects instead of
+    // hanging forever. Without this, checkAuth() on app mount never settles and the
+    // UI is stuck on the loading spinner. 30s is generous enough to absorb a cold
+    // start on a free-tier host while still failing closed on a dead backend.
+    timeout: 30000,
 });
 
 // Request interceptor — read the access token from in-memory Zustand state (NOT
