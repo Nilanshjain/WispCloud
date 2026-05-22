@@ -1,439 +1,181 @@
-# WispCloud ☁️💬
+# WispCloud
 
-**Enterprise-Grade Real-Time Messaging Platform**
+Real-time messaging — direct messages, group chats, and an in-app AI assistant — built on Express, MongoDB, and Socket.IO.
 
-A production-ready, scalable messaging application built with modern cloud architecture. WispCloud demonstrates enterprise-level development skills including WebSocket scaling, microservices patterns, caching strategies, and cloud deployment - optimized for portfolio presentation.
+![Node.js](https://img.shields.io/badge/Node.js-20-339933?logo=node.js&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![MongoDB](https://img.shields.io/badge/MongoDB-Mongoose-47A248?logo=mongodb&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-pub%2Fsub%20%2B%20cache-DC382D?logo=redis&logoColor=white)
+![Socket.IO](https://img.shields.io/badge/Socket.IO-realtime-010101?logo=socket.io&logoColor=white)
 
-[![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)](https://nodejs.org/)
-[![React](https://img.shields.io/badge/React-19-blue.svg)](https://reactjs.org/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-green.svg)](https://www.mongodb.com/cloud/atlas)
-[![Redis](https://img.shields.io/badge/Redis-Cloud-red.svg)](https://redis.com/)
-[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://www.docker.com/)
-
-## 🚀 Key Features
-
-### Implemented ✅
-- **Real-time Messaging** - Instant message delivery with WebSocket (Socket.IO)
-- **Message Replies** - Reply to specific messages with context preservation
-- **Message Search** - Search through chat history in real-time
-- **Group Chats** - Multi-user group conversations with role-based access (owner/admin/member)
-- **OAuth Authentication** - Google Sign-In integration
-- **User Search & Invites** - Find users and send/accept chat invitations
-- **Horizontal Scaling** - Redis Adapter for multi-instance WebSocket support
-- **Message Pagination** - Cursor-based pagination for efficient data loading
-- **Typing Indicators** - Real-time typing status for DMs and groups
-- **Online Presence** - Real-time user online/offline status tracking
-- **Rate Limiting** - Redis-backed rate limiting (100 global, 100 auth, 50 messages per window)
-- **Input Validation** - Zod schemas for type-safe API validation
-- **Security Headers** - Helmet.js with CSP, XSS protection, HSTS
-- **RBAC** - Role-based access control middleware for group permissions
-- **Analytics** - User activity and message analytics tracking
-- **NLP Features** - Sentiment analysis and concept extraction
-- **Database Optimization** - Compound indexes, connection pooling, efficient queries
-- **Caching Layer** - Redis for user profiles, sessions, online presence
-- **Health Monitoring** - `/health` endpoint for uptime checks
-- **Docker Support** - Full containerization with Docker Compose
-- **Seed Data** - Test user generation script for easy development/testing
-
-### Architecture Highlights 🏗️
-- ✅ **Horizontal scaling ready** - Redis Adapter for Socket.IO
-- ✅ **Stateless backend** - All state in Redis/MongoDB
-- ✅ **Database indexing** - Optimized queries with compound indexes
-- ✅ **Caching strategy** - Redis with TTL for high performance
-- ✅ **API rate limiting** - Redis-backed with custom limits per endpoint
-- ✅ **Input validation** - Zod schemas with detailed error messages
-- ✅ **Security hardening** - Helmet.js, CORS whitelist, secure cookies
+The feature set is what you'd expect from a chat app. Most of the engineering went into what sits underneath it: the backend is designed to run as several interchangeable instances, the authentication path can revoke tokens and still work when Redis is down, and an in-app assistant can summarize or answer questions about a conversation with an LLM.
 
 ---
 
-## 📋 Tech Stack
+## Features
 
-### Backend
-- **Runtime:** Node.js 20+ with ES modules
-- **Framework:** Express.js
-- **Database:** MongoDB Atlas (M0 free tier compatible)
-- **Caching:** Redis Cloud (30MB free tier compatible)
-- **Real-time:** Socket.IO with Redis Adapter
-- **Validation:** Zod
-- **Security:** Helmet.js, express-rate-limit
+**Messaging**
+- Direct messages and group chats, with threaded replies and image attachments
+- Typing indicators and online/offline presence, both correct across multiple open tabs
+- Cursor-paginated message history and read receipts
 
-### Frontend
-- **Framework:** React 19
-- **Build Tool:** Vite
-- **Styling:** TailwindCSS v4 + DaisyUI
-- **State:** Zustand
-- **HTTP Client:** Axios
-- **Real-time:** Socket.IO Client
+**Accounts and groups**
+- Email/password accounts (bcrypt-hashed, 12-character minimum) and Google OAuth 2.0 sign-in
+- Chat invitations between users
+- Group roles — owner, admin, member — enforced on the server
 
-### DevOps
-- **Containerization:** Docker + Docker Compose
-- **Deployment:** AWS ECS/Fargate, Railway, or Vercel
-- **Monitoring:** Sentry (planned), Grafana Cloud (planned)
-- **CI/CD:** GitHub Actions (planned)
+**AI assistant**
+- Summarize a conversation, ask free-text questions about it, or extract action items
+- Works on long conversations that exceed the model's context window
 
 ---
 
-## 🚀 Quick Start
+## Architecture
 
-### Prerequisites
-- **Node.js 20+** - [Download](https://nodejs.org/)
-- **Docker & Docker Compose** - [Download](https://www.docker.com/products/docker-desktop) (Recommended)
+The parts worth explaining are the ones that aren't obvious from the feature list.
 
-### Option 1: Docker Compose (⭐ Recommended)
+### Real-time delivery and horizontal scaling
 
-```bash
-# Start all services (MongoDB, Redis, Backend, Frontend)
-docker-compose up
+Socket.IO runs behind its Redis adapter, so WispCloud can run as several identical instances: a message emitted on one instance still reaches clients connected to another, because the adapter relays it over Redis pub/sub. Nothing about a session is pinned to a single process. Online presence lives in Redis as a per-user set of socket IDs, and the online/offline transition is driven by the *size* of that set rather than a local boolean — so a user with three tabs open stays online until the last tab closes, even when those tabs are spread across different instances. Each user also has a personal Socket.IO room, which lets a controller deliver a new message to every device a recipient has open with a single emit.
 
-# Services available at:
-# Frontend: http://localhost:5173
-# Backend:  http://localhost:5001
-```
+### Authentication and access control
+
+Sign-in issues a short-lived JWT access token alongside a longer-lived refresh token; a `type` claim keeps a refresh token from being replayed against a protected route. Every protected request runs a five-step, fail-closed check — token present, signature and expiry valid, correct type, JWT ID not revoked, user still active — and the Socket.IO handshake runs the same pipeline. Logout writes the token's ID to a Redis blocklist whose entry is given a TTL equal to the token's remaining life, so revoked tokens expire themselves with no background cleanup job. The per-request user lookup on that path is served cache-aside from Redis instead of hitting MongoDB every time. The revocation check fails open if Redis is unreachable — a short revocation gap during a cache blip is a better outcome than logging out every active user.
+
+Beyond authentication: role checks gate group actions, every REST body and Socket.IO payload is validated with Zod, responses carry Helmet security headers, CORS is restricted to the configured origin, and rate limiting is Redis-backed and keyed by IP plus user ID, with tighter ceilings on the auth and AI routes.
+
+### AI assistant
+
+The assistant uses Google's Gemini through LangChain. A conversation longer than the model's context window is handled with a map-reduce pass: the transcript is split into chunks, each chunk is summarized on its own, and those summaries are recombined with the most recent messages before the final request. Every model call has a 30-second timeout and is rate-limited per user, and the action-item endpoint asks for JSON and parses it defensively, so a malformed model response degrades into readable output instead of an error.
+
+### Data and caching
+
+MongoDB is accessed through Mongoose with compound and partial indexes. Message history is cursor-paginated rather than offset-paged, so scrolling far back stays cheap. Deletes are soft — a Mongoose plugin scopes every query to non-deleted documents and exposes an explicit `.withDeleted()` escape hatch for analytics. Read-heavy endpoints, such as the analytics rollups, go through a small cache-aside helper with short TTLs.
+
+### Operability
+
+The service exposes two separate probes: `/healthz` for liveness and `/readyz` for readiness. Readiness reports MongoDB and Redis connectivity plus a drain flag, so an orchestrator stops routing traffic before the process shuts down. Shutdown is graceful — it flips the drain flag, flushes pending presence broadcasts, closes Socket.IO and the HTTP server, disconnects MongoDB and Redis, and falls back to a hard exit if cleanup stalls. Logging is structured (pino), with a request ID on every line that is also returned in error responses through a single error handler with a consistent JSON shape. Configuration is checked at startup; the process refuses to boot if a required environment variable is missing.
 
 ---
 
-### Option 2: Local Development (Manual Setup)
+## Tech stack
 
-⚠️ **Requirements:** MongoDB and Redis must be installed and running locally.
+| Layer | Choices |
+|---|---|
+| Backend | Node.js 20, Express, Socket.IO |
+| Database | MongoDB (Mongoose) |
+| Cache / pub-sub | Redis |
+| AI | Google Gemini via LangChain |
+| Auth | JWT, Passport (Google OAuth 2.0), bcrypt |
+| Validation | Zod |
+| Frontend | React 19, Vite, Zustand, Tailwind CSS, DaisyUI |
+| Tooling | Docker Compose, pino, Helmet |
 
-#### Step 1: Start MongoDB
+---
+
+## Running locally
+
+### With Docker Compose (recommended)
+
+Brings up MongoDB, Redis, the backend, the frontend, and a mongo-express admin UI.
+
 ```bash
-# Install MongoDB: https://www.mongodb.com/try/download/community
-# Or use Docker:
-docker run -d -p 27017:27017 --name mongodb \
-  -e MONGO_INITDB_ROOT_USERNAME=admin \
-  -e MONGO_INITDB_ROOT_PASSWORD=password123 \
-  mongo:7
+docker compose up
 ```
 
-#### Step 2: Start Redis
-```bash
-# Install Redis: https://redis.io/download
-# Or use Docker:
-docker run -d -p 6379:6379 --name redis redis:7-alpine
-```
+- Frontend — http://localhost:5173
+- Backend — http://localhost:5001
+- Mongo admin — http://localhost:8081
 
-#### Step 3: Configure Environment
-```bash
-# Copy environment template
-cp .env.example .env
+### Manual setup
 
-# Edit .env and configure:
-# - MONGODB_URI (default works with Docker MongoDB above)
-# - REDIS_URL (default works with Docker Redis above)
-# - CLOUDINARY credentials (get from cloudinary.com)
-# - JWT_SECRET (generate a secure random string)
-```
+Requires MongoDB and Redis running locally, or connection strings pointed at cloud instances.
 
-#### Step 4: Start Backend
 ```bash
+# Backend
 cd backend
+cp .env.example .env      # then fill in the values
 npm install
 npm run dev
 
-# You should see:
-# 🚀 WispCloud Server running on port 5001
-# ✅ MongoDB connected successfully
-# ✅ Redis connected successfully
-```
-
-#### Step 5: Start Frontend (in a new terminal)
-```bash
+# Frontend (separate terminal)
 cd frontend/Wisp
 npm install
 npm run dev
-
-# Frontend will be available at:
-# http://localhost:5173
 ```
 
----
+To populate sample users, groups, and messages for local testing:
 
-### Option 3: Cloud Services (Production-like Setup)
-
-Use cloud databases instead of local ones:
-
-1. **MongoDB Atlas** (Free M0 tier)
-   - Sign up at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas)
-   - Create a free cluster
-   - Get connection string
-   - Update `MONGODB_URI` in `.env`
-
-2. **Redis Cloud** (Free 30MB)
-   - Sign up at [redis.com/try-free](https://redis.com/try-free/)
-   - Create a free database
-   - Get connection string
-   - Update `REDIS_URL` in `.env`
-
-3. **Cloudinary** (Free tier)
-   - Sign up at [cloudinary.com](https://cloudinary.com)
-   - Get credentials from dashboard
-   - Update Cloudinary variables in `.env`
-
-Then run:
 ```bash
-# Backend
-cd backend && npm run dev
-
-# Frontend (new terminal)
-cd frontend/Wisp && npm run dev
-```
-
-### Environment Configuration
-
-Copy `.env.example` and configure:
-
-```env
-# Backend
-PORT=5001
-MONGODB_URI=mongodb://admin:password123@localhost:27017/wispcloud?authSource=admin
-REDIS_URL=redis://:redis123@localhost:6379
-JWT_SECRET=your-super-secret-key
-CLOUDINARY_CLOUD_NAME=your_cloud_name
-CLOUDINARY_API_KEY=your_api_key
-CLOUDINARY_API_SECRET=your_api_secret
-FRONTEND_URL=http://localhost:5173
-```
-
----
-
-## 🧪 Test Users (Seed Data)
-
-For testing and development, you can use the following pre-seeded test accounts:
-
-### Run Seed Script
-```bash
-# Using Docker (recommended)
-docker exec wispcloud-backend npm run seed
-
-# Or locally
 cd backend && npm run seed
 ```
 
-### Test User Credentials
+### Environment
 
-All users have password: **`password123`**
+`backend/.env.example` lists every required variable, and the backend will not start until each one is set. The essentials:
 
-| Email | Username | Role | Connections |
-|-------|----------|------|-------------|
-| **alice@test.com** | alice | Regular User | Connected: Bob, Carol, David |
-| **bob@test.com** | bob | Regular User | Connected: Alice, David; Pending: Eve |
-| **carol@test.com** | carol | Regular User | Connected: Alice, Eve |
-| **david@test.com** | david | Regular User | Connected: Bob, Alice |
-| **eve@test.com** | eve | Regular User | Connected: Carol; Sent invite: Bob |
+```
+MONGODB_URI       MongoDB connection string
+REDIS_URL         Redis connection string
+JWT_SECRET        signing secret for access/refresh tokens
+SESSION_SECRET    Express session secret (used by Passport)
+FRONTEND_URL      allowed CORS / CSP origin
+GEMINI_API_KEY    Google Gemini key for the AI assistant
+CLOUDINARY_*      image-upload credentials
+GOOGLE_CLIENT_*   Google OAuth credentials (optional — OAuth is skipped if unset)
+```
 
-### Test Data Included
-- ✅ **5 test users** with unique avatars
-- ✅ **6 chat connections** (accepted invites)
-- ✅ **1 pending invite** (Eve → Bob)
-- ✅ **1 test group** "Team Alpha" with 3 members:
-  - Alice (owner)
-  - Bob (admin)
-  - Carol (member)
-- ✅ **Sample messages** in both DM and group chats
+### Deployment
 
-> **Note:** Running the seed script will **clear all existing data** in the database.
+The frontend is deployed to Vercel as a static build (`npm run build`). The backend runs as a standard Node service and can be hosted on Render or any equivalent Node platform.
 
 ---
 
-## 📊 Performance Metrics
+## API overview
 
-### Achieved Targets
-- ✅ **Concurrent Users:** 1,000+ WebSocket connections (scalable)
-- ✅ **Message Latency:** < 100ms (p95)
-- ✅ **API Response Time:** < 200ms (p95)
-- ✅ **Database Queries:** < 50ms (with indexes)
-- ✅ **Cache Hit Rate:** > 70% target
+All application routes are under `/api`.
 
----
-
-## 🔒 Security Features
-
-- **Rate Limiting:**
-  - Auth endpoints: 5 attempts per 15 minutes
-  - Messages: 50 per minute
-  - Uploads: 10 per hour
-  - Global: 100 requests per 15 minutes
-
-- **Input Validation:**
-  - Zod schemas for all endpoints
-  - Email format validation
-  - Password strength requirements (min 6 chars)
-  - Message length limits (max 5000 chars)
-
-- **Security Headers (Helmet.js):**
-  - Content Security Policy
-  - XSS Protection
-  - CORS whitelist
-  - HTTP-only secure cookies
+| Route group | Purpose |
+|---|---|
+| `/api/auth` | Signup, login, logout, session check, profile |
+| `/api/auth/oauth/google` | Google OAuth sign-in (enabled when credentials are set) |
+| `/api/messages` | Send direct messages, fetch paginated history |
+| `/api/users` | User search and profiles |
+| `/api/invites` | Send, accept, and reject chat invitations |
+| `/api/groups` | Group CRUD, membership, and group messages |
+| `/api/analytics` | Platform and usage rollups |
+| `/api/ai` | Conversation summary, Q&A, action-item extraction |
+| `/healthz`, `/readyz` | Liveness and readiness probes |
 
 ---
 
-## 📚 Documentation
+## Project structure
 
-- **[IMPLEMENTATION_GUIDE.md](./IMPLEMENTATION_GUIDE.md)** - Complete implementation guide with detailed explanations
-- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Deployment guide (AWS, Railway, Vercel)
-- **[TECHNICAL_GUIDE.md](./TECHNICAL_GUIDE.md)** - Technical overview and architecture
-
----
-
-## 🎯 API Endpoints
-
-### Authentication
 ```
-POST   /api/auth/signup          - Register new user
-POST   /api/auth/login           - Login user
-POST   /api/auth/logout          - Logout user
-GET    /api/auth/check           - Check auth status
-PUT    /api/auth/update-profile  - Update profile
-```
-
-### OAuth
-```
-GET    /api/auth/oauth/google           - Google OAuth login
-GET    /api/auth/oauth/google/callback  - OAuth callback handler
-```
-
-### Messages
-```
-GET    /api/messages/users       - Get all users
-GET    /api/messages/:id         - Get messages (with pagination)
-POST   /api/messages/send/:id    - Send message
-```
-
-### Users
-```
-GET    /api/users/search         - Search users by name/email
-GET    /api/users/profile/:id    - Get user profile
-```
-
-### Chat Invites
-```
-POST   /api/invites/send         - Send chat invite
-GET    /api/invites              - Get pending invites
-PUT    /api/invites/:id/accept   - Accept invite
-PUT    /api/invites/:id/reject   - Reject invite
-```
-
-### Groups
-```
-POST   /api/groups               - Create group
-GET    /api/groups               - Get user's groups
-GET    /api/groups/:id           - Get group details
-PUT    /api/groups/:id           - Update group
-DELETE /api/groups/:id           - Delete group
-POST   /api/groups/:id/members   - Add member
-DELETE /api/groups/:id/members/:userId - Remove member
-GET    /api/groups/:id/messages  - Get group messages
-POST   /api/groups/:id/messages  - Send group message
-```
-
-### Analytics
-```
-GET    /api/analytics/overview   - Get analytics overview
-GET    /api/analytics/user/:id   - Get user analytics
-```
-
-### Health
-```
-GET    /health                   - Server health check
+backend/src
+  config/         Passport (Google OAuth) strategy
+  controllers/    Route handlers
+  lib/            Socket.IO, Redis, DB, logging, caching, error types
+  middleware/     Auth, RBAC, rate limiting, validation, error handler
+  models/         Mongoose schemas
+  routes/         Express routers
+  services/       AI service (Gemini + LangChain)
+  seeds/          Sample-data script
+frontend/Wisp     React + Vite single-page app
 ```
 
 ---
 
-## 🏆 Resume-Worthy Skills Demonstrated
+## Status and roadmap
 
-### Architecture & Scalability
-- Horizontal scaling with Redis Adapter
-- Multi-instance WebSocket support
-- Stateless backend design
-- Database optimization (indexing, pooling)
-- Caching strategies with Redis
-- Event-driven architecture
+WispCloud runs on free-tier infrastructure — MongoDB Atlas M0, a small Redis instance, and a single backend instance — so the horizontal-scaling design is in place but currently exercised at single-instance scale. Next on the list:
 
-### Security & Best Practices
-- Rate limiting with Redis
-- Input validation with Zod
-- Security headers (Helmet.js)
-- CORS configuration
-- Secure authentication (JWT + HTTP-only cookies)
-
-### DevOps & Infrastructure
-- Docker containerization (multi-stage builds)
-- Docker Compose orchestration
-- Cloud deployment ready (AWS/Railway/Vercel)
-- Health monitoring endpoints
-- Graceful shutdown handling
+- Automated tests (Vitest + Supertest)
+- Sentry error tracking
+- Published load-test results
 
 ---
 
-## 💰 Deployment Costs
+## License
 
-### Free Tier Option (Portfolio)
-- MongoDB Atlas M0: **$0/month**
-- Redis Cloud 30MB: **$0/month**
-- Vercel (Frontend): **$0/month**
-- Railway Starter: **$5/month**
-- Cloudinary: **$0/month**
-- **Total: $5/month**
-
-### Production Option
-- MongoDB Atlas M10: **$10/month**
-- Redis Cloud 250MB: **$5/month**
-- AWS ECS Fargate: **~$15/month**
-- Vercel Pro: **$20/month** (optional)
-- **Total: ~$30-50/month**
-
----
-
-## 🧪 Testing (Planned)
-
-- [ ] Unit tests (Jest) - 80%+ coverage target
-- [ ] Integration tests (Supertest)
-- [ ] E2E tests (Playwright)
-- [ ] Load testing (Artillery/k6) - 1K+ concurrent users
-
----
-
-## 🚧 Roadmap
-
-### Phase 3: Enhanced Features (Next)
-- [ ] Read receipts (schema ready)
-- [ ] Message search with full-text indexing
-- [ ] File attachments (documents, videos, audio)
-- [ ] Voice messages with waveform visualization
-- [ ] Push notifications (Web Push & FCM)
-- [ ] Enhanced NLP analytics dashboard
-
-### Phase 4: DevOps & Monitoring
-- [ ] GitHub Actions CI/CD pipeline
-- [ ] Sentry error tracking integration
-- [ ] Grafana Cloud monitoring
-- [ ] API documentation (Swagger/OpenAPI)
-- [ ] Load testing results (k6/Artillery)
-- [ ] E2E encryption (future consideration)
-
----
-
-## 📝 License
-
-MIT License - Free to use for portfolio/learning purposes
-
----
-
-## 🤝 Contributing
-
-This is a portfolio project, but suggestions and feedback are welcome!
-
----
-
-## 📧 Contact
-
-**Live Demo:** [Coming Soon]
-**GitHub:** [Your Repository URL]
-
----
-
-## ⭐ Acknowledgments
-
-Built with modern best practices to demonstrate enterprise-level development skills for recruiting purposes.
+MIT
