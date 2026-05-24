@@ -18,7 +18,11 @@ import groupRoutes from "./routes/group.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
 import aiRoutes from "./routes/ai.routes.js";
 import { app, server, io, initializeSocketIO, flushPresenceBroadcast } from "./lib/socket.js";
-import { globalLimiter } from "./middleware/rateLimiter.js";
+import {
+    globalLimiter,
+    initializeRateLimiters,
+    isRateLimitersInitialized,
+} from "./middleware/rateLimiter.js";
 import { logger, httpLogger } from "./lib/logger.js";
 import { errorHandler } from "./middleware/errorHandler.js";
 
@@ -33,6 +37,19 @@ configureGoogleStrategy();
 
 const PORT = process.env.PORT || 5001;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+
+// Behind Render's reverse proxy, the original client IP arrives in the
+// X-Forwarded-For header; the TCP source is Render's internal hop. Without
+// this setting, req.ip resolves to the proxy address — identical for every
+// client — and any IP-keyed middleware (rate limiter, audit log) buckets the
+// whole platform together.
+//
+// Literal 1 (not `true`) means "trust exactly the leftmost proxy hop". `true`
+// would trust any number of X-Forwarded-For entries, including attacker-
+// controlled ones from the client side, and lets a malicious caller spoof
+// their key by forging the header. Render → app is one hop; if a CDN were
+// added in front, bump to 2.
+app.set('trust proxy', 1);
 
 // Request-scoped logger + request ID. Mounted FIRST so every subsequent middleware
 // + route handler has req.log available and the X-Request-Id header is set early.
@@ -99,6 +116,11 @@ app.use(cors({
 // stay exempt. Render's keep-alive cron pings /healthz every 14 minutes; without
 // this exemption it would count against the 500/15min IP budget AND a real
 // burst from a buggy client could mask probe failures during a live incident.
+//
+// globalLimiter is a proxy middleware whose underlying rateLimit() instance is
+// built later in startServer() once Redis is connected. The reference exported
+// here is stable; first request through the proxy dispatches to the real
+// instance. See backend/src/middleware/rateLimiter.js for the indirection.
 app.use("/api", globalLimiter);
 
 // Drain flag, flipped to true on SIGTERM/SIGINT so /readyz can signal "drain me" to load balancers.
@@ -173,6 +195,16 @@ const startServer = async () => {
     try {
         await connectDB();
         await connectRedis();
+
+        // Build the rate-limit instances now that Redis is up. Must happen
+        // after connectRedis() so the Redis-store branch picks up the live
+        // client, and before server.listen() so the first request finds the
+        // proxy-middlewares pointing at real instances.
+        initializeRateLimiters();
+        if (!isRateLimitersInitialized()) {
+            throw new Error("Rate limiters reported not initialized after initializeRateLimiters() — boot ordering bug");
+        }
+
         await initializeSocketIO();
 
         server.listen(PORT, () => {

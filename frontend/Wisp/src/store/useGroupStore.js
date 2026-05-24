@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import toast from 'react-hot-toast';
 import { axiosInstance } from '../lib/axios';
+import { extractErrorMessage } from '../lib/extractError.js';
 import { useAuthStore } from './useAuthStore';
 import { EVENTS } from '../lib/socketEvents';
 
@@ -20,7 +21,7 @@ export const useGroupStore = create((set, get) => ({
             set({ groups: res.data });
         } catch (error) {
             if (error.response?.status !== 429) {
-                toast.error(error.response?.data?.error || 'Failed to fetch groups');
+                toast.error(extractErrorMessage(error, 'Failed to fetch groups'));
             }
         } finally {
             set({ isGroupsLoading: false });
@@ -35,14 +36,7 @@ export const useGroupStore = create((set, get) => ({
             toast.success('Group created successfully');
             return res.data;
         } catch (error) {
-            const message = error.response?.data?.error || error.response?.data?.message;
-            if (error.response?.status === 429) {
-                toast.error('Too many requests. Please wait a moment.');
-            } else if (message) {
-                toast.error(message);
-            } else {
-                toast.error('Failed to create group');
-            }
+            toast.error(extractErrorMessage(error, 'Failed to create group'));
             throw error;
         }
     },
@@ -61,7 +55,7 @@ export const useGroupStore = create((set, get) => ({
             toast.success('Group updated successfully');
             return res.data;
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to update group');
+            toast.error(extractErrorMessage(error, 'Failed to update group'));
             throw error;
         }
     },
@@ -77,7 +71,7 @@ export const useGroupStore = create((set, get) => ({
             }));
             toast.success('Group deleted successfully');
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to delete group');
+            toast.error(extractErrorMessage(error, 'Failed to delete group'));
             throw error;
         }
     },
@@ -88,7 +82,7 @@ export const useGroupStore = create((set, get) => ({
             const res = await axiosInstance.get(`/groups/${groupId}`);
             return res.data;
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to fetch group details');
+            toast.error(extractErrorMessage(error, 'Failed to fetch group details'));
             throw error;
         }
     },
@@ -99,7 +93,7 @@ export const useGroupStore = create((set, get) => ({
             const res = await axiosInstance.get(`/groups/${groupId}/members`);
             return res.data;
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to fetch group members');
+            toast.error(extractErrorMessage(error, 'Failed to fetch group members'));
             throw error;
         }
     },
@@ -111,14 +105,7 @@ export const useGroupStore = create((set, get) => ({
             toast.success('Members added successfully');
             return res.data;
         } catch (error) {
-            const message = error.response?.data?.error || error.response?.data?.message;
-            if (error.response?.status === 429) {
-                toast.error('Too many requests. Please wait a moment.');
-            } else if (message) {
-                toast.error(message);
-            } else {
-                toast.error('Failed to add members');
-            }
+            toast.error(extractErrorMessage(error, 'Failed to add members'));
             throw error;
         }
     },
@@ -129,7 +116,7 @@ export const useGroupStore = create((set, get) => ({
             await axiosInstance.delete(`/groups/${groupId}/members/${memberId}`);
             toast.success('Member removed successfully');
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to remove member');
+            toast.error(extractErrorMessage(error, 'Failed to remove member'));
             throw error;
         }
     },
@@ -144,7 +131,7 @@ export const useGroupStore = create((set, get) => ({
             toast.success('Member role updated successfully');
             return res.data;
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to update member role');
+            toast.error(extractErrorMessage(error, 'Failed to update member role'));
             throw error;
         }
     },
@@ -160,7 +147,7 @@ export const useGroupStore = create((set, get) => ({
             }));
             toast.success('Left group successfully');
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to leave group');
+            toast.error(extractErrorMessage(error, 'Failed to leave group'));
             throw error;
         }
     },
@@ -180,7 +167,7 @@ export const useGroupStore = create((set, get) => ({
             const res = await axiosInstance.get(`/groups/${groupId}/messages`);
             set({ groupMessages: res.data.messages });
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to fetch messages');
+            toast.error(extractErrorMessage(error, 'Failed to fetch messages'));
         } finally {
             set({ isMessagesLoading: false });
         }
@@ -202,7 +189,7 @@ export const useGroupStore = create((set, get) => ({
 
             return res.data;
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to send message');
+            toast.error(extractErrorMessage(error, 'Failed to send message'));
             throw error;
         }
     },
@@ -216,7 +203,7 @@ export const useGroupStore = create((set, get) => ({
             }));
             toast.success('Message deleted');
         } catch (error) {
-            toast.error(error.response?.data?.error || 'Failed to delete message');
+            toast.error(extractErrorMessage(error, 'Failed to delete message'));
             throw error;
         }
     },

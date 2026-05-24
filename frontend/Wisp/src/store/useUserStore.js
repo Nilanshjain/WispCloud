@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
+import { extractErrorMessage } from "../lib/extractError.js";
 
 export const useUserStore = create((set, get) => ({
   searchResults: [],
@@ -23,7 +24,7 @@ export const useUserStore = create((set, get) => ({
       set({ searchResults: res.data.users });
     } catch (error) {
       console.error("Search error:", error);
-      toast.error(error.response?.data?.error || "Failed to search users");
+      toast.error(extractErrorMessage(error, "Failed to search users"));
       set({ searchResults: [] });
     } finally {
       set({ isSearching: false });

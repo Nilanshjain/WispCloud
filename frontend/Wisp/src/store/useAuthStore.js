@@ -1,5 +1,6 @@
 import {create} from "zustand";
 import { axiosInstance } from '../lib/axios.js';
+import { extractErrorMessage } from "../lib/extractError.js";
 import toast from "react-hot-toast";
 import {io} from "socket.io-client";
 import { useChatStore } from "./useChatStore";
@@ -77,7 +78,7 @@ export const useAuthStore = create((set, get) => ({
             toast.success("Account created successfully");
             get().connectSocket();
         } catch (error) {
-            toast.error(error.response?.data?.message || "Signup failed");
+            toast.error(extractErrorMessage(error, "Signup failed"));
         } finally {
             set({ isSigningUp: false });
         }
@@ -113,7 +114,7 @@ export const useAuthStore = create((set, get) => ({
             toast.success("Logged in successfully");
             get().connectSocket();
         } catch (error) {
-            toast.error(error.response?.data?.message || "Login failed");
+            toast.error(extractErrorMessage(error, "Login failed"));
         } finally {
             set({ isLoggingIn: false });
         }
@@ -127,7 +128,7 @@ export const useAuthStore = create((set, get) => ({
             toast.success("Profile updated successfully");
         } catch (error) {
             console.log("error in update profile:", error);
-            toast.error(error.response?.data?.message || "Update failed");
+            toast.error(extractErrorMessage(error, "Update failed"));
         } finally {
             set({ isUpdatingProfile: false });
         }

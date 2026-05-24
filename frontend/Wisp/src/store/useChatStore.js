@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
+import { extractErrorMessage } from "../lib/extractError.js";
 import { useAuthStore } from "./useAuthStore";
 import { EVENTS } from "../lib/socketEvents";
 
@@ -22,7 +23,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.get("/messages/users");
       set({ users: res.data });
     } catch (error) {
-      const message = error.response?.data?.message || error.response?.data?.error;
+      const message = extractErrorMessage(error, null);
       if (error.response?.status === 429) {
         console.warn("Rate limited on getUsers");
       } else if (message) {
@@ -44,7 +45,7 @@ export const useChatStore = create((set, get) => ({
       const messages = Array.isArray(res.data) ? res.data : (res.data.messages || []);
       set({ messages: messages || [] });
     } catch (error) {
-      toast.error(error.response?.data?.message || "Failed to fetch messages");
+      toast.error(extractErrorMessage(error, "Failed to fetch messages"));
       set({ messages: [] }); // Reset to empty array on error
     } finally {
       set({ isMessagesLoading: false });
@@ -56,7 +57,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.post(`/messages/send/${selectedUser._id}`, messageData);
       set({ messages: [...messages, res.data] });
     } catch (error) {
-      toast.error(error.response?.data?.message || "Failed to send message");
+      toast.error(extractErrorMessage(error, "Failed to send message"));
     }
   },
 

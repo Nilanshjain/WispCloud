@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import toast from "react-hot-toast";
 import { axiosInstance } from "../lib/axios";
+import { extractErrorMessage } from "../lib/extractError.js";
 import { useAuthStore } from "./useAuthStore";
 import { EVENTS } from "../lib/socketEvents";
 
@@ -17,8 +18,7 @@ export const useChatInviteStore = create((set, get) => ({
       get().getSentInvites(); // Refresh sent invites
       return res.data;
     } catch (error) {
-      const message = error.response?.data?.error || "Failed to send invite";
-      toast.error(message);
+      toast.error(extractErrorMessage(error, "Failed to send invite"));
       throw error;
     }
   },
@@ -36,7 +36,7 @@ export const useChatInviteStore = create((set, get) => ({
 
       return true;
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to accept invite");
+      toast.error(extractErrorMessage(error, "Failed to accept invite"));
       return false;
     }
   },
@@ -54,7 +54,7 @@ export const useChatInviteStore = create((set, get) => ({
 
       return true;
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to reject invite");
+      toast.error(extractErrorMessage(error, "Failed to reject invite"));
       return false;
     }
   },
@@ -72,7 +72,7 @@ export const useChatInviteStore = create((set, get) => ({
 
       return true;
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to cancel invite");
+      toast.error(extractErrorMessage(error, "Failed to cancel invite"));
       return false;
     }
   },
@@ -84,7 +84,7 @@ export const useChatInviteStore = create((set, get) => ({
       const res = await axiosInstance.get("/invites/pending");
       set({ pendingInvites: res.data });
     } catch (error) {
-      toast.error(error.response?.data?.error || "Failed to fetch invites");
+      toast.error(extractErrorMessage(error, "Failed to fetch invites"));
     } finally {
       set({ isLoading: false });
     }
