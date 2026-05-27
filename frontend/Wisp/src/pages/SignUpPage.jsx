@@ -19,7 +19,11 @@ const SignUpPage = () => {
   const { signup, isSigningUp } = useAuthStore();
 
   const validateForm = () => {
+    // Mirrors backend signupSchema (validation.js). Drift between client and
+    // server validation lets the client submit values the server then rejects
+    // with an opaque toast — keep these limits identical to the Zod schema.
     if (!formData.fullName.trim()) return toast.error("Full name is required");
+    if (formData.fullName.trim().length < 2) return toast.error("Full name must be at least 2 characters");
     if (!formData.email.trim()) return toast.error("Email is required");
     if (!/\S+@\S+\.\S+/.test(formData.email)) return toast.error("Invalid email format");
     if (!formData.username.trim()) return toast.error("Username is required");
@@ -27,7 +31,7 @@ const SignUpPage = () => {
     if (formData.username.length > 20) return toast.error("Username must be less than 20 characters");
     if (!/^[a-zA-Z0-9_]+$/.test(formData.username)) return toast.error("Username can only contain letters, numbers, and underscores");
     if (!formData.password) return toast.error("Password is required");
-    if (formData.password.length < 6) return toast.error("Password must be at least 6 characters");
+    if (formData.password.length < 12) return toast.error("Password must be at least 12 characters");
 
     return true;
   };
